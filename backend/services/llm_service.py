@@ -15,20 +15,24 @@ CONTENT_RULES = """Content Integrity Rules:
 RESUME_CONTENT_RULE = """Content Integrity Rule:
 - Do not fabricate job titles, companies, degrees, or dates. Only include information the user has provided."""
 
-def call_llm(messages, temperature=0.7, max_tokens=8192, retries=3):
+def call_llm(messages, temperature=0.7, max_tokens=4096, retries=2):
+    if not OPENCODE_ZEN_API_KEY or not OPENCODE_ZEN_API_KEY.strip():
+        raise RuntimeError("OPENCODE_ZEN_API_KEY is not set")
+    headers = {"Authorization": f"Bearer {OPENCODE_ZEN_API_KEY.strip()}"}
     last_err = None
+
     for attempt in range(retries):
         try:
             resp = httpx.post(
                 f"{OPENCODE_ZEN_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {OPENCODE_ZEN_API_KEY}"},
+                headers=headers,
                 json={
                     "model": LLM_MODEL,
                     "messages": messages,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                 },
-                timeout=300
+                timeout=60
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
@@ -36,7 +40,7 @@ def call_llm(messages, temperature=0.7, max_tokens=8192, retries=3):
             last_err = e
             if attempt < retries - 1:
                 import time
-                time.sleep(1.5 ** attempt)
+                time.sleep(1.0)
     raise last_err or RuntimeError("call_llm failed")
 
 def call_llm_json(messages, temperature=0.3, max_tokens=4096):
@@ -283,40 +287,57 @@ Author details: {answers_text}"""
         {"role": "user", "content": prompt}
     ]
     try:
-        with httpx.Client(timeout=300) as client:
-            with client.stream(
-                "POST",
-                f"{OPENCODE_ZEN_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {OPENCODE_ZEN_API_KEY}"},
-                json={
-                    "model": LLM_MODEL,
-                    "messages": messages,
-                    "temperature": 0.5,
-                    "max_tokens": 16384,
-                    "stream": True,
-                    "reasoning_effort": "none",
-                },
-            ) as resp:
-                resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    payload = line[6:].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                        choices = chunk.get("choices")
-                        if not choices:
+        if not OPENCODE_ZEN_API_KEY or not OPENCODE_ZEN_API_KEY.strip():
+            raise RuntimeError("No API key configured, using fallback")
+        headers = {"Authorization": f"Bearer {OPENCODE_ZEN_API_KEY.strip()}"}
+        streamed_any = False
+        try:
+            with httpx.Client(timeout=300) as client:
+                with client.stream(
+                    "POST",
+                    f"{OPENCODE_ZEN_BASE_URL}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": LLM_MODEL,
+                        "messages": messages,
+                        "temperature": 0.5,
+                        "max_tokens": 4096,
+                        "stream": True,
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    for line in resp.iter_lines():
+                        if not line or not line.startswith("data: "):
                             continue
-                        delta = choices[0].get("delta", {})
-                        content = delta.get("content", "")
-                        reasoning = delta.get("reasoning", "")
-                        token = content or reasoning or ""
-                        if token:
-                            yield token
-                    except (json.JSONDecodeError, IndexError, KeyError):
-                        continue
+                        payload = line[6:].strip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                            choices = chunk.get("choices")
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+                            reasoning = delta.get("reasoning", "")
+                            token = content or reasoning or ""
+                            if token:
+                                streamed_any = True
+                                yield token
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+        except Exception:
+            if not streamed_any:
+                text = call_llm(messages, temperature=0.5, max_tokens=4096)
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+                for chunk in [text[i:i+80] for i in range(0, len(text), 80)]:
+                    yield chunk
+                    import time
+                    time.sleep(0.01)
+                streamed_any = True
+        if not streamed_any:
+            raise RuntimeError("LLM output empty")
     except Exception:
         for token in _generate_fallback_paper(file_text, answers, analysis):
             yield token
@@ -380,17 +401,27 @@ def _generate_fallback_resume(file_text: str, answers: dict, analysis: dict):
     projects = analysis.get("projects") or []
     certifications = analysis.get("certifications") or []
 
-    lines = [f"# {name}", "", "## Summary", summary or "Professional with experience in technology."]
+    contact_parts = [p for p in [email, phone] if p]
+    contact_line = " | ".join(contact_parts)
+
+    lines = [f"# {name}"]
+    if contact_line:
+        lines.append(contact_line)
+    lines.extend(["", "## Summary", summary or "Dedicated and experienced professional with a strong track record of success."])
+
     if education:
         lines.append("")
         lines.append("## Education")
         for e in education:
-            lines.append(f"- {e}")
+            lines.append(f"- **{e}**" if not str(e).startswith("**") else f"- {e}")
     if experience:
         lines.append("")
         lines.append("## Experience")
         for e in experience:
-            lines.append(f"- {e}")
+            if "—" in str(e) or "-" in str(e):
+                lines.append(f"### {e}")
+            else:
+                lines.append(f"- {e}")
     if skills:
         lines.append("")
         lines.append("## Skills")
@@ -400,7 +431,7 @@ def _generate_fallback_resume(file_text: str, answers: dict, analysis: dict):
         lines.append("")
         lines.append("## Projects")
         for p in projects:
-            lines.append(f"- {p}")
+            lines.append(f"- **{p}**" if not str(p).startswith("**") else f"- {p}")
     if certifications:
         lines.append("")
         lines.append("## Certifications")
@@ -412,6 +443,36 @@ def _generate_fallback_resume(file_text: str, answers: dict, analysis: dict):
         yield chunk
         import time
         time.sleep(0.02)
+
+
+def _extract_resume_metadata_heuristic(file_text: str) -> dict:
+    import re
+    res = {
+        "name": "",
+        "email": "",
+        "phone": "",
+        "education": [],
+        "experience": [],
+        "skills": [],
+        "summary": "",
+        "projects": [],
+        "certifications": []
+    }
+    lines = [l.strip() for l in file_text.split("\n") if l.strip()]
+    if lines:
+        first = lines[0].lstrip("#").strip()
+        if len(first.split()) <= 4 and not any(c in first for c in ["@", "http", ".com"]):
+            res["name"] = first
+
+    em = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', file_text)
+    if em:
+        res["email"] = em.group(0)
+
+    ph = re.search(r'[\+]?[\d\-\(\)\s]{7,}', file_text)
+    if ph and sum(c.isdigit() for c in ph.group(0)) >= 7:
+        res["phone"] = ph.group(0).strip()
+
+    return res
 
 
 def analyze_document_for_resume(file_text: str) -> dict:
@@ -433,10 +494,13 @@ If a field is not found, use an empty string or empty array. Do not invent infor
 
 Document content:
 {file_text[:15000]}"""
-    return call_llm_json([
-        {"role": "system", "content": "You extract resume metadata from documents. Return only valid JSON."},
-        {"role": "user", "content": prompt}
-    ])
+    try:
+        return call_llm_json([
+            {"role": "system", "content": "You extract resume metadata from documents. Return only valid JSON."},
+            {"role": "user", "content": prompt}
+        ])
+    except Exception:
+        return _extract_resume_metadata_heuristic(file_text)
 
 
 def generate_resume_question(file_text: str, answers: dict, questions_asked: list, analysis: dict = None) -> dict:
@@ -570,7 +634,10 @@ Contact Info:
 - Email: {email}
 - Phone: {phone}
 
-Use these ##-prefixed sections in order:
+Format instructions:
+1. Start with `# {name}` at the very top as the main heading.
+2. On the next line, list contact details separated by |: `{email} | {phone}`
+3. Use these ##-prefixed sections in order:
 - ## Summary
 - ## Education
 - ## Experience
@@ -580,10 +647,10 @@ Use these ##-prefixed sections in order:
 
 Rules:
 - Start with ## Summary (2-3 sentence professional summary based on the document).
-- For ## Education, list each entry as: **Degree** — School, Year with GPA if available.
+- For ## Education, list each entry as: - **Degree** — School, Year with GPA if available.
 - For ## Experience, use ### sub-headings: ### Role | Company | Location | Dates then bullet points for achievements. Always use the | separator format.
 - For ## Skills, group by category (Languages, Frameworks, Tools, etc.) as bullet points. Eg: "- Languages: Python, Java, C++"
-- For ## Projects, use bold names with brief descriptions. Use format **Project Name** | Tech: ... then bullet points.
+- For ## Projects, use format: - **Project Name** | Tech: ... then bullet points.
 - For ## Certifications, simple bullet list.
 - Only include sections that have content. Skip empty sections.
 - Never invent specific numbers, metrics, or achievements not mentioned in the source document.
@@ -596,39 +663,60 @@ Additional details from user: {answers_text}"""
         {"role": "system", "content": "You write professional resumes in clean markdown. Use only ##-prefixed section headings. Output only the resume, never commentary."},
         {"role": "user", "content": prompt}
     ]
+    headers = {}
+    if OPENCODE_ZEN_API_KEY and OPENCODE_ZEN_API_KEY.strip():
+        headers["Authorization"] = f"Bearer {OPENCODE_ZEN_API_KEY.strip()}"
+
     try:
-        with httpx.Client(timeout=300) as client:
-            with client.stream(
-                "POST",
-                f"{OPENCODE_ZEN_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {OPENCODE_ZEN_API_KEY}"},
-                json={
-                    "model": LLM_MODEL,
-                    "messages": messages,
-                    "temperature": 0.5,
-                    "max_tokens": 16384,
-                    "stream": True,
-                    "reasoning_effort": "none",
-                },
-            ) as resp:
-                resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    payload = line[6:].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                        choices = chunk.get("choices")
-                        if not choices:
+        if not OPENCODE_ZEN_API_KEY or not OPENCODE_ZEN_API_KEY.strip():
+            raise RuntimeError("No API key configured, using fallback")
+        headers = {"Authorization": f"Bearer {OPENCODE_ZEN_API_KEY.strip()}"}
+        streamed_any = False
+        try:
+            with httpx.Client(timeout=300) as client:
+                with client.stream(
+                    "POST",
+                    f"{OPENCODE_ZEN_BASE_URL}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": LLM_MODEL,
+                        "messages": messages,
+                        "temperature": 0.5,
+                        "max_tokens": 4096,
+                        "stream": True,
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    for line in resp.iter_lines():
+                        if not line or not line.startswith("data: "):
                             continue
-                        delta = choices[0].get("delta", {})
-                        token = delta.get("content", "") or delta.get("reasoning", "")
-                        if token:
-                            yield token
-                    except (json.JSONDecodeError, IndexError, KeyError):
-                        continue
+                        payload = line[6:].strip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                            choices = chunk.get("choices")
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+                            token = delta.get("content", "") or delta.get("reasoning", "")
+                            if token:
+                                streamed_any = True
+                                yield token
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+        except Exception:
+            if not streamed_any:
+                text = call_llm(messages, temperature=0.5, max_tokens=4096)
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+                for chunk in [text[i:i+80] for i in range(0, len(text), 80)]:
+                    yield chunk
+                    import time
+                    time.sleep(0.01)
+                streamed_any = True
+        if not streamed_any:
+            raise RuntimeError("LLM output empty")
     except Exception:
         for token in _generate_fallback_resume(file_text, answers, analysis):
             yield token
@@ -649,8 +737,11 @@ Never include reasoning, chain-of-thought, or commentary — output only the rev
         {"role": "system", "content": "You edit professional resumes using only ##-prefixed section headings. Output only the resume, never reasoning or commentary."},
         {"role": "user", "content": prompt}
     ]
-    text = call_llm(messages, temperature=0.4, max_tokens=16384)
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
-    return text.strip()
+    try:
+        text = call_llm(messages, temperature=0.4, max_tokens=16384)
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+        return text.strip()
+    except Exception:
+        return resume_text

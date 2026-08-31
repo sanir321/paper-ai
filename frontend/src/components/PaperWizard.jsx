@@ -243,8 +243,9 @@ export default function PaperWizard({ onNewSession }) {
   const answerQuestion = async (answer) => {
     if (!question || !answer.trim()) return;
     setLoading(true);
+    const qObj = question;
     setQuestion(null);
-    const q = question.question;
+    const q = typeof qObj === 'object' ? (qObj.question || '') : qObj;
     setMessages(prev => [...prev, { role: 'user', text: answer }]);
     setAiTyping(true);
     try {
@@ -277,7 +278,8 @@ export default function PaperWizard({ onNewSession }) {
     setMessages(prev => [...prev, { role: 'user', text: answer }]);
     setAiTyping(true);
     try {
-      const data = await apiService.submitAnswer(sessionId, followUp.follow_up, answer);
+      const followUpQ = followUp?.follow_up || followUp?.question || 'Clarification';
+      const data = await apiService.submitAnswer(sessionId, followUpQ, answer);
       setCustomFollowUp('');
       await new Promise(r => setTimeout(r, 700));
       if (data.ready) {
@@ -299,11 +301,12 @@ export default function PaperWizard({ onNewSession }) {
       if (data.ready) {
         setReady(true); setQuestion(null);
         setMessages(prev => [...prev, { role: 'ai', text: 'Skipping — enough information to generate the paper!' }]);
+        goStep(3);
       } else {
         setQuestion(data);
         setMessages(prev => [...prev, { role: 'ai', text: `${data.question}` }]);
+        goStep(2);
       }
-      goStep(2);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
@@ -319,7 +322,7 @@ export default function PaperWizard({ onNewSession }) {
       try {
         const data = JSON.parse(evt.data);
         if (data.type === 'token') {
-          setLivePaper(prev => prev + (data.content || '').replace(/\\n/g, '\n').replace(/\\r/g, '\r'));
+          setLivePaper(prev => prev + (data.content || ''));
         } else if (data.type === 'error') {
           streamDone.current = true;
           setError(data.message || 'Generation failed');
@@ -406,12 +409,15 @@ export default function PaperWizard({ onNewSession }) {
       if (selectedMode === 'resume') {
         if (data.ready) {
           setResumeReady(true);
-          setResumeMessages([{ role: 'ai', text: `I've analyzed "${file.name}". Ready to generate your resume!` }]);
+          setResumeQuestion(null);
+          setResumeMessages([{ role: 'ai', text: `I've analyzed "${file?.name || 'your document'}". Ready to generate your resume!` }]);
+          goStep(3);
         } else if (data.question) {
-          setResumeQuestion(data.question);
-          setResumeMessages([{ role: 'ai', text: `I've analyzed your document for resume content. Let me ask a few questions.\n\n${data.question.question}` }]);
+          setResumeQuestion(data);
+          const qText = typeof data.question === 'string' ? data.question : (data.question?.question || '');
+          setResumeMessages([{ role: 'ai', text: `I've analyzed your document for resume content. Let me ask a few questions.\n\n${qText}` }]);
+          goStep(2);
         }
-        goStep(2);
       } else {
         // IEEE mode — set analysis and first question
         setAnalysis(data.analysis);
@@ -420,16 +426,18 @@ export default function PaperWizard({ onNewSession }) {
           d.sessionId === sessionId ? { ...d, title: docTitle } : d
         ));
         if (data.question) {
-          setQuestion(data.question);
+          setQuestion(data);
           setAiTyping(true);
+          const qText = typeof data.question === 'string' ? data.question : (data.question?.question || '');
           setTimeout(() => {
             setAiTyping(false);
-            setMessages([{ role: 'ai', text: `I've analyzed "${file.name}". Let me ask a few questions.\n\n${data.question.question}` }]);
+            setMessages([{ role: 'ai', text: `I've analyzed "${file?.name || 'your document'}". Let me ask a few questions.\n\n${qText}` }]);
             goStep(2);
           }, 600);
         } else {
           setReady(true);
-          setMessages([{ role: 'ai', text: `I've analyzed "${file.name}". The analysis is clear enough to generate a paper!` }]);
+          setMessages([{ role: 'ai', text: `I've analyzed "${file?.name || 'your document'}". The analysis is clear enough to generate a paper!` }]);
+          goStep(3);
         }
       }
     } catch (e) { setError(e.message); }
@@ -440,8 +448,9 @@ export default function PaperWizard({ onNewSession }) {
   const answerResumeQuestion = async (answer) => {
     if (!resumeQuestion || !answer.trim()) return;
     setLoading(true);
+    const qObj = resumeQuestion;
     setResumeQuestion(null);
-    const q = resumeQuestion.question;
+    const q = typeof qObj === 'object' ? (qObj.question || '') : qObj;
     setResumeMessages(prev => [...prev, { role: 'user', text: answer }]);
     setAiTyping(true);
     try {
@@ -449,11 +458,16 @@ export default function PaperWizard({ onNewSession }) {
       setResumeCustomAnswer('');
       await new Promise(r => setTimeout(r, 700));
       if (data.ready) {
-        setResumeReady(true); setAiTyping(false);
+        setResumeReady(true);
+        setResumeQuestion(null);
+        setAiTyping(false);
         setResumeMessages(prev => [...prev, { role: 'ai', text: 'Great — I have enough information to generate your resume!' }]);
+        goStep(3);
       } else {
-        setResumeQuestion(data); setAiTyping(false);
-        setResumeMessages(prev => [...prev, { role: 'ai', text: data.question || '' }]);
+        setResumeQuestion(data);
+        setAiTyping(false);
+        const qText = typeof data.question === 'string' ? data.question : (data.question?.question || '');
+        setResumeMessages(prev => [...prev, { role: 'ai', text: qText }]);
       }
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -471,7 +485,7 @@ export default function PaperWizard({ onNewSession }) {
       try {
         const data = JSON.parse(evt.data);
         if (data.type === 'token') {
-          setLiveResume(prev => prev + (data.content || '').replace(/\\n/g, '\n').replace(/\\r/g, '\r'));
+          setLiveResume(prev => prev + (data.content || ''));
         } else if (data.type === 'error') {
           streamDone.current = true;
           setError(data.message || 'Generation failed');
@@ -731,7 +745,7 @@ export default function PaperWizard({ onNewSession }) {
             </div>
           )}
 
-          {(step === 2 || (step === 1 && question)) && (
+          {mode !== 'resume' && (step === 2 || (step === 1 && question)) && !ready && (
             <div className="flex flex-col border rounded-2xl overflow-hidden flex-1 min-h-0 bg-canvas border-hairline"
               style={{ boxShadow: '0 2px 12px rgba(0,0,0,0.04)' }}>
               <div className="px-4 md:px-6 py-3 border-b border-hairline text-sm shrink-0 flex items-center gap-2 text-muted">
@@ -856,7 +870,7 @@ export default function PaperWizard({ onNewSession }) {
             </div>
           )}
 
-          {(step === 3 || ready) && !result && !generating && (
+          {mode !== 'resume' && (step === 3 || ready) && !result && !generating && (
             <div className="rounded-2xl border transition-all duration-200 bg-surface-card border-hairline">
               <div className="p-5 md:p-8 text-center">
                 <p className="text-base md:text-lg mb-4 font-display text-ink" style={{ letterSpacing: '-0.3px' }}>Ready to generate your paper</p>
@@ -896,7 +910,7 @@ export default function PaperWizard({ onNewSession }) {
           )}
 
           {/* ─── Resume interview (step 2, mode=resume) ──────────────────── */}
-          {mode === 'resume' && (step === 2 || (step === 1 && resumeQuestion)) && (
+          {mode === 'resume' && (step === 2 || (step === 1 && resumeQuestion)) && !resumeReady && (
             <div className="flex flex-col border rounded-2xl overflow-hidden flex-1 min-h-0 bg-canvas border-hairline"
               style={{ boxShadow: '0 2px 12px rgba(0,0,0,0.04)' }}>
               <div className="px-4 md:px-6 py-3 border-b border-hairline text-sm shrink-0 flex items-center gap-2 text-muted">

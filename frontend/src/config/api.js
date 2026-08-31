@@ -1,4 +1,6 @@
-export const BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const BASE = import.meta.env.VITE_API_BASE_URL !== undefined
+  ? import.meta.env.VITE_API_BASE_URL
+  : (import.meta.env.DEV ? 'http://localhost:8000' : '');
 
 // ponytail: one fetch helper instead of repeating the ok-check everywhere
 async function req(url, opts = {}) {

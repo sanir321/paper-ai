@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+node_modules
+frontend/node_modules
+dist
+frontend/dist
+.DS_Store
+*.log
+scratch
+DocOct-Pitch.pptx
+generate-pptx.js

@@ -1,9 +1,12 @@
 import os
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 OPENCODE_ZEN_API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
 OPENCODE_ZEN_BASE_URL = os.environ.get("OPENCODE_ZEN_BASE_URL", "https://opencode.ai/zen/v1")
-LLM_MODEL = os.environ.get("LLM_MODEL", "nemotron-3-ultra-free")
+LLM_MODEL = os.environ.get("LLM_MODEL", "laguna-s-2.1-free")
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 if not OPENCODE_ZEN_API_KEY:

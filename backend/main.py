@@ -1,9 +1,10 @@
 import asyncio, time
 from dataclasses import dataclass, field
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os, re, uuid, tempfile, json, shutil
 import PyPDF2
@@ -356,9 +357,9 @@ def extract_docx_images(file_path: str, session_dir: str) -> list:
     return images
 
 
-@app.get("/")
-async def root():
-    return {"message": "Research Paper Generator", "status": "running"}
+@app.get("/api/health")
+async def health_check():
+    return {"message": "DocOct AI Generator", "status": "running"}
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -1302,111 +1303,158 @@ def build_markdown(title, abstract, sections, keywords, refs):
 
 # ─── Resume helpers ───────────────────────────────────────────────────────────
 
+# ─── Resume helpers ───────────────────────────────────────────────────────────
+
 def generate_resume_html(resume_data: dict) -> str:
     """Render a professional single-column resume HTML."""
-    name = resume_data.get("name", "Your Name")
-    email = resume_data.get("email", "")
-    phone = resume_data.get("phone", "")
-    linkedin = resume_data.get("linkedin", "")
-    github = resume_data.get("github", "")
-    location = resume_data.get("location", "")
+    def esc(t):
+        if not t:
+            return ""
+        return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    name = esc(resume_data.get("name") or "Your Name")
+    email = esc(resume_data.get("email") or "")
+    phone = esc(resume_data.get("phone") or "")
+    linkedin = esc(resume_data.get("linkedin") or "")
+    github = esc(resume_data.get("github") or "")
+    location = esc(resume_data.get("location") or "")
 
     contact_parts = []
     if location:
-        contact_parts.append(f'<span class="ci-icon">&#9906;</span> {location}')
+        contact_parts.append(f'<span class="ci"><span class="ci-icon">&#9906;</span> {location}</span>')
     if email:
-        contact_parts.append(f'<span class="ci-icon">&#9993;</span> {email}')
+        contact_parts.append(f'<span class="ci"><span class="ci-icon">&#9993;</span> <a href="mailto:{email}">{email}</a></span>')
     if phone:
-        contact_parts.append(f'<span class="ci-icon">&#9742;</span> {phone}')
+        contact_parts.append(f'<span class="ci"><span class="ci-icon">&#9742;</span> {phone}</span>')
     if linkedin:
-        contact_parts.append(f'<span class="ci-icon">in</span> {linkedin}')
+        li_url = linkedin if linkedin.startswith("http") else f"https://{linkedin}"
+        contact_parts.append(f'<span class="ci"><span class="ci-icon">in</span> <a href="{li_url}" target="_blank">{linkedin}</a></span>')
     if github:
-        contact_parts.append(f'<span class="ci-icon">&#9733;</span> {github}')
-    contact_str = '&nbsp;&nbsp;&nbsp;'.join(contact_parts)
+        gh_url = github if github.startswith("http") else f"https://{github}"
+        contact_parts.append(f'<span class="ci"><span class="ci-icon">&#9733;</span> <a href="{gh_url}" target="_blank">{github}</a></span>')
+    contact_str = '&nbsp;&nbsp;&bull;&nbsp;&nbsp;'.join(contact_parts)
 
     sections_html = ""
     section_order = ["Summary", "Education", "Experience", "Skills", "Projects", "Certifications"]
     for section_name in section_order:
-        items = resume_data.get(section_name.lower(), [])
+        items = resume_data.get(section_name.lower())
         if not items:
             continue
-        sections_html += f'<div class="section"><div class="section-title">{section_name}</div>'
+
+        sec_content = ""
         if section_name == "Summary":
-            text = items[0] if isinstance(items, list) else items
-            sections_html += f'<p class="summary-text">{text}</p>'
-        elif section_name == "Skills":
-            sections_html += '<div class="skills">'
-            for skill in items:
-                sections_html += f'<span class="skill">{skill}</span>'
-            sections_html += '</div>'
-        elif section_name in ("Education", "Certifications"):
+            text = items if isinstance(items, str) else " ".join(items) if isinstance(items, list) else str(items)
+            if text.strip():
+                sec_content = f'<p class="summary-text">{esc(text)}</p>'
+
+        elif section_name == "Education":
             for item in items:
                 if isinstance(item, dict):
-                    title = item.get("degree") or item.get("name") or item.get("text", "")
-                    school = item.get("school", "")
-                    year = item.get("year", "")
-                    gpa = item.get("gpa", "")
-                    sections_html += '<div class="item">'
-                    sections_html += '<div class="item-header">'
-                    sections_html += f'<div class="item-title">{title}</div>'
+                    degree = esc(item.get("degree") or item.get("name") or item.get("text", ""))
+                    school = esc(item.get("school", ""))
+                    year = esc(item.get("year", ""))
+                    gpa = esc(item.get("gpa", ""))
+                    if not degree:
+                        continue
+                    sec_content += '<div class="item">'
+                    sec_content += '<div class="item-header">'
+                    sec_content += f'<div class="item-title">{degree}</div>'
                     if year:
-                        sections_html += f'<div class="item-date">{year}</div>'
-                    sections_html += '</div>'
+                        sec_content += f'<div class="item-date">{year}</div>'
+                    sec_content += '</div>'
+                    sub_parts = []
                     if school:
-                        sections_html += f'<div class="item-subtitle">{school}</div>'
+                        sub_parts.append(school)
                     if gpa:
-                        sections_html += f'<div class="item-detail">GPA: {gpa}</div>'
-                    sections_html += '</div>'
+                        sub_parts.append(f"GPA: {gpa}")
+                    if sub_parts:
+                        sec_content += f'<div class="item-subtitle">{" &middot; ".join(sub_parts)}</div>'
+                    sec_content += '</div>'
                 else:
-                    sections_html += f'<div class="item"><p>{item}</p></div>'
+                    sec_content += f'<div class="item"><p>{esc(str(item))}</p></div>'
+
         elif section_name == "Experience":
             for item in items:
                 if isinstance(item, dict):
-                    title = item.get("role") or item.get("title") or ""
-                    company = item.get("company", "")
-                    dates = item.get("dates", "")
-                    location = item.get("location", "")
-                    sections_html += '<div class="item">'
-                    sections_html += '<div class="item-header">'
-                    sections_html += f'<div class="item-title">{title}</div>'
-                    if dates:
-                        sections_html += f'<div class="item-date">{dates}</div>'
-                    sections_html += '</div>'
-                    if company:
-                        loc_str = f" &middot; {location}" if location else ""
-                        sections_html += f'<div class="item-subtitle">{company}{loc_str}</div>'
+                    role = esc(item.get("role") or item.get("title") or "")
+                    company = esc(item.get("company", ""))
+                    dates = esc(item.get("dates", ""))
+                    loc = esc(item.get("location", ""))
                     bullets = item.get("bullets", [])
+                    if not role and not company:
+                        continue
+                    sec_content += '<div class="item">'
+                    sec_content += '<div class="item-header">'
+                    sec_content += f'<div class="item-title">{role or company}</div>'
+                    if dates:
+                        sec_content += f'<div class="item-date">{dates}</div>'
+                    sec_content += '</div>'
+                    sub_parts = []
+                    if company and role:
+                        sub_parts.append(company)
+                    if loc:
+                        sub_parts.append(loc)
+                    if sub_parts:
+                        sec_content += f'<div class="item-subtitle">{" &middot; ".join(sub_parts)}</div>'
                     if bullets:
-                        sections_html += '<ul class="bullets">'
+                        sec_content += '<ul class="bullets">'
                         for b in bullets:
-                            sections_html += f'<li>{b}</li>'
-                        sections_html += '</ul>'
-                    sections_html += '</div>'
+                            sec_content += f'<li>{esc(str(b))}</li>'
+                        sec_content += '</ul>'
+                    sec_content += '</div>'
                 else:
-                    sections_html += f'<div class="item"><p>{item}</p></div>'
+                    sec_content += f'<div class="item"><p>{esc(str(item))}</p></div>'
+
+        elif section_name == "Skills":
+            sec_content += '<div class="skills-container">'
+            for skill in items:
+                skill_str = str(skill).strip()
+                if ":" in skill_str:
+                    cat, val = skill_str.split(":", 1)
+                    sec_content += f'<div class="skill-row"><span class="skill-cat">{esc(cat.strip())}:</span> <span class="skill-val">{esc(val.strip())}</span></div>'
+                else:
+                    sec_content += f'<span class="skill-tag">{esc(skill_str)}</span>'
+            sec_content += '</div>'
+
         elif section_name == "Projects":
             for item in items:
                 if isinstance(item, dict):
-                    title = item.get("name") or item.get("title") or ""
-                    tech = item.get("tech", "")
-                    link = item.get("link", "")
-                    sections_html += '<div class="item">'
-                    sections_html += '<div class="item-header">'
-                    sections_html += f'<div class="item-title">{title}</div>'
+                    p_name = esc(item.get("name") or item.get("title") or "")
+                    tech = esc(item.get("tech", ""))
+                    link = esc(item.get("link", ""))
+                    desc = esc(item.get("description", ""))
+                    bullets = item.get("bullets", [])
+                    if not p_name:
+                        continue
+                    sec_content += '<div class="item">'
+                    sec_content += '<div class="item-header">'
+                    sec_content += f'<div class="item-title">{p_name}</div>'
                     if tech:
-                        sections_html += f'<div class="item-tech">{tech}</div>'
-                    sections_html += '</div>'
+                        sec_content += f'<div class="item-tech">{tech}</div>'
+                    sec_content += '</div>'
                     if link:
-                        sections_html += f'<div class="item-link"><a href="{link}">{link}</a></div>'
-                    desc = item.get("description", "")
+                        sec_content += f'<div class="item-link"><a href="{link}" target="_blank">{link}</a></div>'
                     if desc:
-                        sections_html += f'<p class="project-desc">{desc}</p>'
-                    for b in item.get("bullets", []):
-                        sections_html += f'<p class="project-bullet">&bull; {b}</p>'
-                    sections_html += '</div>'
+                        sec_content += f'<p class="project-desc">{desc}</p>'
+                    if bullets:
+                        sec_content += '<ul class="bullets">'
+                        for b in bullets:
+                            sec_content += f'<li>{esc(str(b))}</li>'
+                        sec_content += '</ul>'
+                    sec_content += '</div>'
                 else:
-                    sections_html += f'<div class="item"><p>{item}</p></div>'
-        sections_html += '</div>'
+                    sec_content += f'<div class="item"><p>{esc(str(item))}</p></div>'
+
+        elif section_name == "Certifications":
+            sec_content += '<ul class="bullets">'
+            for item in items:
+                c_text = esc(item.get("text", "") if isinstance(item, dict) else str(item))
+                if c_text:
+                    sec_content += f'<li>{c_text}</li>'
+            sec_content += '</ul>'
+
+        if sec_content:
+            sections_html += f'<div class="section"><div class="section-title">{section_name}</div>{sec_content}</div>'
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -1414,32 +1462,33 @@ def generate_resume_html(resume_data: dict) -> str:
 <style>
   @page {{ size: letter; margin: 0.45in 0.5in; }}
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10pt; color: #2d2d2d; line-height: 1.4; }}
-  .resume {{ max-width: 7.5in; margin: 0 auto; padding: 0.35in 0.45in; }}
-  .header {{ text-align: center; padding-bottom: 10px; margin-bottom: 14px; }}
-  .header::after {{ content: ""; display: block; height: 2px; background: linear-gradient(to right, transparent, #1a5276, transparent); margin-top: 10px; }}
-  .name {{ font-size: 24pt; font-weight: 700; color: #1a1a2e; letter-spacing: 1px; margin-bottom: 3px; }}
-  .contact {{ font-size: 8.5pt; color: #555; line-height: 1.6; }}
-  .ci-icon {{ font-weight: bold; color: #1a5276; margin-right: 1px; }}
-  .section {{ margin-bottom: 12px; }}
-  .section-title {{ font-size: 11pt; font-weight: 700; color: #1a5276; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid #2980b9; padding-bottom: 2px; margin-bottom: 7px; }}
-  .summary-text {{ font-size: 9.5pt; color: #444; line-height: 1.5; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 9.5pt; color: #2d3748; line-height: 1.45; background: #fff; }}
+  .resume {{ max-width: 7.5in; margin: 0 auto; padding: 0.4in 0.5in; }}
+  .header {{ text-align: center; padding-bottom: 12px; margin-bottom: 14px; border-bottom: 2px solid #1a5276; }}
+  .name {{ font-size: 22pt; font-weight: 700; color: #1a365d; letter-spacing: 0.5px; margin-bottom: 5px; }}
+  .contact {{ font-size: 8.5pt; color: #4a5568; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; }}
+  .contact a {{ color: #2b6cb0; text-decoration: none; }}
+  .contact a:hover {{ text-decoration: underline; }}
+  .ci-icon {{ font-weight: bold; color: #1a5276; margin-right: 2px; }}
+  .section {{ margin-bottom: 14px; }}
+  .section-title {{ font-size: 10.5pt; font-weight: 700; color: #1a5276; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid #bee3f8; padding-bottom: 3px; margin-bottom: 8px; }}
+  .summary-text {{ font-size: 9.5pt; color: #2d3748; line-height: 1.5; text-align: justify; }}
   .item {{ margin-bottom: 9px; }}
   .item-header {{ display: flex; justify-content: space-between; align-items: baseline; }}
-  .item-title {{ font-weight: 700; font-size: 10pt; color: #1a1a2e; }}
-  .item-date {{ color: #666; font-size: 9pt; white-space: nowrap; }}
-  .item-subtitle {{ font-style: italic; color: #555; font-size: 9.5pt; margin-bottom: 2px; }}
-  .item-detail {{ font-size: 9pt; color: #555; margin-top: 1px; }}
-  .item-tech {{ font-size: 9pt; color: #2980b9; }}
-  .item-link a {{ font-size: 8.5pt; color: #2980b9; text-decoration: none; }}
-  .item-link a:hover {{ text-decoration: underline; }}
-  ul.bullets {{ margin: 2px 0 0 14px; padding: 0; }}
-  ul.bullets li {{ font-size: 9.5pt; color: #444; margin-bottom: 2px; line-height: 1.45; }}
-  .project-desc {{ font-size: 9.5pt; color: #444; margin-top: 1px; }}
-  .project-bullet {{ font-size: 9pt; color: #555; margin-left: 12px; }}
-  .skills {{ display: flex; flex-wrap: wrap; gap: 4px 6px; }}
-  .skill {{ background: #eaf2f8; color: #1a5276; padding: 2px 10px; border-radius: 2px; font-size: 9pt; border: 1px solid #d4e6f1; }}
-  @media print {{ body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }} .resume {{ padding: 0; }} .item-link a {{ text-decoration: none; }} }}
+  .item-title {{ font-weight: 700; font-size: 9.5pt; color: #1a202c; }}
+  .item-date {{ color: #718096; font-size: 8.5pt; font-weight: 500; white-space: nowrap; }}
+  .item-subtitle {{ font-style: italic; color: #4a5568; font-size: 9pt; margin-top: 1px; margin-bottom: 3px; }}
+  .item-tech {{ font-size: 8.5pt; color: #2b6cb0; font-style: italic; }}
+  .item-link a {{ font-size: 8.5pt; color: #2b6cb0; text-decoration: none; }}
+  ul.bullets {{ margin: 3px 0 0 16px; padding: 0; }}
+  ul.bullets li {{ font-size: 9pt; color: #2d3748; margin-bottom: 2.5px; line-height: 1.4; }}
+  .project-desc {{ font-size: 9pt; color: #2d3748; margin-top: 2px; }}
+  .skills-container {{ display: flex; flex-direction: column; gap: 4px; }}
+  .skill-row {{ font-size: 9pt; line-height: 1.4; }}
+  .skill-cat {{ font-weight: 700; color: #2d3748; }}
+  .skill-val {{ color: #4a5568; }}
+  .skill-tag {{ display: inline-block; background: #ebf8ff; color: #2b6cb0; padding: 2px 8px; border-radius: 4px; font-size: 8.5pt; border: 1px solid #bee3f8; margin: 2px; }}
+  @media print {{ body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }} .resume {{ padding: 0; max-width: 100%; }} }}
 </style></head><body>
 <div class="resume">
   <div class="header">
@@ -1460,7 +1509,7 @@ def parse_resume_text(resume_text: str) -> dict:
         "linkedin": "",
         "github": "",
         "location": "",
-        "summary": [],
+        "summary": "",
         "education": [],
         "experience": [],
         "skills": [],
@@ -1469,189 +1518,234 @@ def parse_resume_text(resume_text: str) -> dict:
     }
     lines = resume_text.strip().split("\n")
     current_section = None
-    current_item = None
+    current_exp = None
+    current_proj = None
+    summary_lines = []
+
+    def clean_md(text: str) -> str:
+        return text.replace("**", "").replace("__", "").replace("`", "").strip()
+
+    def parse_contact_line(line: str):
+        clean = line.strip().lstrip("-*#").strip()
+        clean = clean.replace("**", "").replace("__", "").strip()
+        if not clean:
+            return
+
+        if re.match(r'^(email|e-mail)\s*:\s*', clean, re.I):
+            result["email"] = re.sub(r'^(email|e-mail)\s*:\s*', '', clean, flags=re.I).strip()
+            return
+        if re.match(r'^(phone|tel|mobile)\s*:\s*', clean, re.I):
+            result["phone"] = re.sub(r'^(phone|tel|mobile)\s*:\s*', '', clean, flags=re.I).strip()
+            return
+        if re.match(r'^(linkedin)\s*:\s*', clean, re.I):
+            result["linkedin"] = re.sub(r'^(linkedin)\s*:\s*', '', clean, flags=re.I).strip()
+            return
+        if re.match(r'^(github)\s*:\s*', clean, re.I):
+            result["github"] = re.sub(r'^(github)\s*:\s*', '', clean, flags=re.I).strip()
+            return
+        if re.match(r'^(location|address)\s*:\s*', clean, re.I):
+            result["location"] = re.sub(r'^(location|address)\s*:\s*', '', clean, flags=re.I).strip()
+            return
+
+        parts = [p.strip() for p in re.split(r'\s*[|•·]\s*', clean) if p.strip()]
+        for p in parts:
+            if "@" in p and not result["email"]:
+                m = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', p)
+                result["email"] = m.group(0) if m else p
+            elif "linkedin" in p.lower() and not result["linkedin"]:
+                result["linkedin"] = p
+            elif "github" in p.lower() and not result["github"]:
+                result["github"] = p
+            elif re.search(r'[\+]?[\d\-\(\)\s]{7,}', p) and sum(c.isdigit() for c in p) >= 7 and not result["phone"]:
+                result["phone"] = p
+            elif not result["location"] and len(p.split()) <= 4 and not any(k in p.lower() for k in ["http", "www", ".com", "@"]):
+                result["location"] = p
+
     section_map = {
         "summary": "summary",
+        "professional summary": "summary",
+        "profile": "summary",
+        "about": "summary",
         "education": "education",
+        "academic background": "education",
         "experience": "experience",
+        "work experience": "experience",
+        "professional experience": "experience",
+        "employment": "experience",
         "skills": "skills",
+        "technical skills": "skills",
+        "core competencies": "skills",
+        "technologies": "skills",
         "projects": "projects",
+        "key projects": "projects",
+        "personal projects": "projects",
         "certifications": "certifications",
+        "certificates": "certifications",
+        "licenses & certifications": "certifications",
     }
-
-    def extract_email(s):
-        m = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', s)
-        return m.group(0) if m else ""
-
-    def extract_phone(s):
-        m = re.search(r'[\+]?[\d\-\(\)\s]{7,}', s)
-        return m.group(0).strip() if m else ""
 
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("```"):
             continue
 
-        # Try to extract contact info from first few lines before sections
-        if not any(stripped.startswith("#") for s in ["## ", "### "]):
-            if current_section is None:
-                if not result["name"] and not stripped.startswith(("- ", "* ")):
-                    if "linkedin" in stripped.lower():
-                        result["linkedin"] = stripped.replace("- ", "").replace("* ", "").strip()
-                    elif "github" in stripped.lower():
-                        result["github"] = stripped.replace("- ", "").replace("* ", "").strip()
-                    elif "@" in stripped:
-                        result["email"] = extract_email(stripped) or stripped.strip()
-                    elif re.search(r'[\+]?\d[\d\-\(\)\s]{7,}', stripped):
-                        result["phone"] = extract_phone(stripped)
-                    else:
-                        # If no section started, this might be contact line
-                        pass
-
-        # H2 section heading
-        if stripped.startswith("## "):
-            heading = stripped[3:].strip().lower()
-            current_section = section_map.get(heading)
-            current_item = None
-            continue
+        if stripped.startswith("#"):
+            h_text = stripped.lstrip("#").strip().lower()
+            if h_text in section_map:
+                current_section = section_map[h_text]
+                current_exp = None
+                current_proj = None
+                continue
+            if current_section is None and not result["name"]:
+                result["name"] = clean_md(stripped.lstrip("#").strip())
+                continue
 
         if current_section is None:
+            if not result["name"] and not any(c in stripped for c in ["@", "|", "•", "·", "http", ".com"]):
+                result["name"] = clean_md(stripped)
+            else:
+                parse_contact_line(stripped)
             continue
 
         if current_section == "summary":
-            result["summary"].append(stripped.lstrip("- ").lstrip("* ").strip())
+            summary_lines.append(stripped.lstrip("-*• ").strip())
+
         elif current_section == "skills":
-            clean = stripped.lstrip("- ").lstrip("* ").strip()
+            clean = stripped.lstrip("-*• ").strip()
             clean = clean.replace("**", "").replace("__", "").strip()
             if clean:
                 result["skills"].append(clean)
+
         elif current_section == "education":
-            if stripped.startswith("### ") or stripped.startswith("**"):
-                raw = stripped.lstrip("#").strip().replace("**", "").replace("__", "").strip()
-                # Try to parse "Degree — School, Year" or "Degree | School | Year"
-                item = {"text": raw}
-                for sep in [" — ", " | ", " - ", " – "]:
-                    parts = raw.split(sep, 2)
+            raw = clean_md(stripped.lstrip("-*•# ").strip())
+            if not raw:
+                continue
+            item = {"degree": "", "school": "", "year": "", "gpa": "", "text": raw}
+
+            gpa_m = re.search(r'[Gg][Pp][Aa][:\s]*([\d.]+)', raw)
+            if gpa_m:
+                item["gpa"] = gpa_m.group(1)
+                raw_clean = re.sub(r'[,|]?\s*[Gg][Pp][Aa][:\s]*[\d.]+', '', raw).strip()
+            else:
+                raw_clean = raw
+
+            split_done = False
+            for sep in [" — ", " | ", " – ", " - "]:
+                if sep in raw_clean:
+                    parts = [p.strip() for p in raw_clean.split(sep) if p.strip()]
                     if len(parts) >= 2:
-                        item["degree"] = parts[0].strip()
-                        remaining = parts[1].strip()
+                        item["degree"] = parts[0]
                         if len(parts) >= 3:
-                            item["school"] = remaining
-                            item["year"] = parts[2].strip()
+                            item["school"] = parts[1]
+                            item["year"] = parts[2]
                         else:
-                            # Try splitting remaining on comma
-                            if "," in remaining:
-                                s, y = remaining.rsplit(",", 1)
-                                yy = y.strip()
-                                gpa_m = re.search(r'[Gg][Pp][Aa][:\s]*([\d.]+)', yy)
-                                if gpa_m:
-                                    item["gpa"] = gpa_m.group(1)
-                                    no_gpa = remaining.rsplit(",", 1)[0].strip()
-                                    if "," in no_gpa:
-                                        s2, y2 = no_gpa.rsplit(",", 1)
-                                        item["school"] = s2.strip()
-                                        item["year"] = y2.strip()
-                                    else:
-                                        item["school"] = no_gpa
-                                else:
-                                    item["school"] = s.strip()
-                                    item["year"] = yy
+                            rem = parts[1]
+                            if "," in rem:
+                                s, y = rem.rsplit(",", 1)
+                                item["school"] = s.strip()
+                                item["year"] = y.strip()
                             else:
-                                item["school"] = remaining
+                                item["school"] = rem
+                        split_done = True
                         break
-                # Extract GPA if not already found
-                if "gpa" in raw.lower() and not item.get("gpa"):
-                    gpa_m = re.search(r'[Gg][Pp][Aa][:\s]*([\d.]+)', raw)
-                    if gpa_m:
-                        item["gpa"] = gpa_m.group(1)
-                result["education"].append(item)
-            elif stripped.startswith("- ") or stripped.startswith("* "):
-                clean = stripped[2:].strip().replace("**", "").replace("__", "")
-                result["education"].append({"text": clean})
-            else:
-                result["education"].append({"text": stripped.replace("**", "").replace("__", "")})
-        elif current_section == "certifications":
-            if stripped.startswith("- ") or stripped.startswith("* "):
-                clean = stripped[2:].strip().replace("**", "").replace("__", "")
-                result["certifications"].append({"text": clean})
-            elif stripped.startswith("**") or stripped.startswith("###"):
-                clean = stripped.lstrip("#").strip().replace("**", "").replace("__", "").strip()
-                result["certifications"].append({"text": clean})
-            else:
-                result["certifications"].append({"text": stripped.replace("**", "").replace("__", "")})
+            if not split_done:
+                c_parts = [p.strip() for p in raw_clean.split(",") if p.strip()]
+                if len(c_parts) >= 3:
+                    item["degree"] = c_parts[0]
+                    item["school"] = c_parts[1]
+                    item["year"] = c_parts[2]
+                elif len(c_parts) == 2:
+                    item["degree"] = c_parts[0]
+                    item["school"] = c_parts[1]
+                else:
+                    item["degree"] = raw_clean
+
+            result["education"].append(item)
+
         elif current_section == "experience":
-            if stripped.startswith("### "):
-                raw = stripped[4:].strip().replace("**", "").replace("__", "").strip()
-                # Parse "Role | Company | Location | Dates"
-                item = {"title": raw, "bullets": []}
-                parts = [p.strip() for p in raw.replace(" — ", " | ").replace(" – ", " | ").split("|")]
+            is_bullet = stripped.startswith(("- ", "* ", "• ")) or (stripped.startswith("  ") and not stripped.startswith("###"))
+            if stripped.startswith("### ") or (stripped.startswith("**") and not is_bullet):
+                raw = clean_md(stripped.lstrip("#").strip())
+                item = {"role": "", "company": "", "location": "", "dates": "", "bullets": []}
+                parts = [p.strip() for p in re.split(r'\s*[|—–]\s*', raw) if p.strip()]
                 if len(parts) >= 1:
-                    item["role"] = parts[0].strip()
+                    item["role"] = parts[0]
                 if len(parts) >= 2:
-                    item["company"] = parts[1].strip()
+                    item["company"] = parts[1]
                 if len(parts) >= 3:
-                    # Could be location or dates
-                    if any(kw in parts[2].lower() for kw in ("present", "20", "19")):
-                        item["dates"] = parts[2].strip()
+                    if any(kw in parts[2].lower() for kw in ("present", "20", "19", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")):
+                        item["dates"] = parts[2]
                     else:
-                        item["location"] = parts[2].strip()
+                        item["location"] = parts[2]
                 if len(parts) >= 4:
-                    item["dates"] = parts[3].strip()
-                current_item = item
-                result["experience"].append(current_item)
-            elif stripped.startswith("- ") or stripped.startswith("* "):
-                bullet = stripped[2:].strip().replace("**", "").replace("__", "")
-                if current_item:
-                    current_item["bullets"].append(bullet)
-                else:
-                    current_item = {"title": "", "role": "", "bullets": [bullet]}
-                    result["experience"].append(current_item)
-            else:
-                clean = stripped.replace("**", "").replace("__", "")
-                if current_item:
-                    current_item["bullets"].append(clean)
-                else:
-                    current_item = {"title": clean, "role": clean, "bullets": []}
-                    result["experience"].append(current_item)
-        elif current_section == "projects":
-            if stripped.startswith("### ") or stripped.startswith("**"):
-                raw = stripped.lstrip("#").strip().replace("**", "").replace("__", "").strip()
-                # Parse "Name | Tech" link
-                item = {"title": raw, "name": raw, "bullets": []}
-                if " | " in raw:
-                    parts = raw.split(" | ", 1)
-                    item["title"] = parts[0].strip()
-                    item["name"] = parts[0].strip()
-                    if "tech" in parts[1].lower() or ":" in parts[1]:
-                        item["tech"] = parts[1].strip()
+                    item["dates"] = parts[3]
+                current_exp = item
+                result["experience"].append(current_exp)
+            elif is_bullet:
+                bullet = clean_md(re.sub(r'^[-*•\s]+', '', stripped).strip())
+                if bullet:
+                    if current_exp:
+                        current_exp["bullets"].append(bullet)
                     else:
-                        item["tech"] = parts[1].strip()
-                current_item = item
-                result["projects"].append(current_item)
-            elif stripped.startswith("- ") or stripped.startswith("* "):
-                bullet = stripped[2:].strip().replace("**", "").replace("__", "")
-                if current_item:
-                    current_item["bullets"].append(bullet)
-                else:
-                    current_item = {"title": "", "name": "", "bullets": [bullet]}
-                    result["projects"].append(current_item)
+                        current_exp = {"role": "", "company": "", "location": "", "dates": "", "bullets": [bullet]}
+                        result["experience"].append(current_exp)
             else:
-                clean = stripped.replace("**", "").replace("__", "")
-                if current_item:
-                    current_item["bullets"].append(clean)
+                clean = clean_md(stripped)
+                if current_exp and not current_exp["company"] and not current_exp["bullets"]:
+                    current_exp["company"] = clean
+                elif current_exp:
+                    current_exp["bullets"].append(clean)
                 else:
-                    current_item = {"title": clean, "name": clean, "bullets": []}
-                    result["projects"].append(current_item)
+                    current_exp = {"role": clean, "company": "", "location": "", "dates": "", "bullets": []}
+                    result["experience"].append(current_exp)
 
-    # Flatten summary
-    result["summary"] = " ".join(result["summary"]) if result["summary"] else ""
+        elif current_section == "projects":
+            is_bullet = stripped.startswith(("- ", "* ", "• ")) or (stripped.startswith("  ") and not stripped.startswith("###"))
+            is_header = stripped.startswith("### ") or (stripped.startswith("**") and (" | " in stripped or " — " in stripped or " – " in stripped or not is_bullet)) or (stripped.startswith("- **") and (" | " in stripped or " — " in stripped))
 
-    # Try to extract name from first line if not in section
-    if not result["name"] and lines:
-        first = lines[0].strip()
-        if not first.startswith("#") and not first.startswith("##"):
-            result["name"] = first
+            if is_header:
+                raw = clean_md(stripped.lstrip("-*•# ").strip())
+                item = {"name": "", "tech": "", "link": "", "description": "", "bullets": []}
+                for sep in [" | ", " — ", " – "]:
+                    if sep in raw:
+                        parts = raw.split(sep, 1)
+                        item["name"] = parts[0].strip()
+                        p2 = parts[1].strip()
+                        if re.match(r'^(tech|technology|technologies)\s*:\s*', p2, re.I):
+                            item["tech"] = p2
+                        elif "http" in p2:
+                            item["link"] = p2
+                        else:
+                            item["tech"] = p2
+                        break
+                if not item["name"]:
+                    item["name"] = raw
+                current_proj = item
+                result["projects"].append(current_proj)
+            elif is_bullet:
+                bullet = clean_md(re.sub(r'^[-*•\s]+', '', stripped).strip())
+                if bullet:
+                    if current_proj:
+                        current_proj["bullets"].append(bullet)
+                    else:
+                        current_proj = {"name": bullet, "tech": "", "link": "", "description": "", "bullets": []}
+                        result["projects"].append(current_proj)
+            else:
+                clean = clean_md(stripped)
+                if current_proj and not current_proj["description"] and not current_proj["bullets"]:
+                    current_proj["description"] = clean
+                elif current_proj:
+                    current_proj["bullets"].append(clean)
+                else:
+                    current_proj = {"name": clean, "tech": "", "link": "", "description": "", "bullets": []}
+                    result["projects"].append(current_proj)
 
+        elif current_section == "certifications":
+            clean = clean_md(stripped.lstrip("-*•# ").strip())
+            if clean:
+                result["certifications"].append({"text": clean})
+
+    result["summary"] = " ".join(summary_lines)
     return result
 
 
@@ -1660,6 +1754,8 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
     from fpdf import FPDF
 
     def ascii_safe(t):
+        if not t:
+            return ""
         if not isinstance(t, str):
             t = str(t)
         t = t.replace('\u2014', '--').replace('\u2013', '-')
@@ -1668,99 +1764,110 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
         t = t.replace('\u00b2', '^2').replace('\u00b3', '^3')
         t = t.replace('\u00d7', 'x').replace('\u00f7', '/')
         t = t.replace('\u2022', '--').replace('\u2023', '-')
-        return t.encode('ascii', 'replace').decode('ascii')
+        t = t.replace('\u00b7', '|')
+        return t.encode('latin-1', 'replace').decode('latin-1')
 
-    name = ascii_safe(resume_data.get("name", "Resume"))
-    email = ascii_safe(resume_data.get("email", ""))
-    phone = ascii_safe(resume_data.get("phone", ""))
-    linkedin = ascii_safe(resume_data.get("linkedin", ""))
-    github_acc = ascii_safe(resume_data.get("github", ""))
-    loc = ascii_safe(resume_data.get("location", ""))
-    summary = ascii_safe(resume_data.get("summary", ""))
-    education = resume_data.get("education", [])
-    experience = resume_data.get("experience", [])
-    skills = resume_data.get("skills", [])
-    projects = resume_data.get("projects", [])
-    certifications = resume_data.get("certifications", [])
+    name = ascii_safe(resume_data.get("name") or "Resume")
+    email = ascii_safe(resume_data.get("email") or "")
+    phone = ascii_safe(resume_data.get("phone") or "")
+    linkedin = ascii_safe(resume_data.get("linkedin") or "")
+    github_acc = ascii_safe(resume_data.get("github") or "")
+    loc = ascii_safe(resume_data.get("location") or "")
+    summary = ascii_safe(resume_data.get("summary") or "")
+    education = resume_data.get("education") or []
+    experience = resume_data.get("experience") or []
+    skills = resume_data.get("skills") or []
+    projects = resume_data.get("projects") or []
+    certifications = resume_data.get("certifications") or []
 
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    ml = mr = 18
+    ml = 16
     pw = 210
-    content_w = pw - ml - mr
+    content_w = pw - ml * 2
 
     def section_header(title):
-        pdf.set_font("Helvetica", "B", 11)
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "B", 10.5)
         pdf.set_text_color(26, 82, 118)
-        pdf.cell(content_w, 7, ascii_safe(title.upper()), new_x="LMARGIN", new_y="NEXT")
-        pdf.set_draw_color(41, 128, 185)
-        pdf.set_line_width(0.4)
+        pdf.set_x(ml)
+        pdf.cell(content_w, 6, ascii_safe(title.upper()), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_draw_color(190, 227, 248)
+        pdf.set_line_width(0.5)
         pdf.line(ml, pdf.get_y(), ml + content_w, pdf.get_y())
-        pdf.ln(3)
-        pdf.set_text_color(45, 45, 45)
+        pdf.ln(2.5)
+        pdf.set_text_color(45, 55, 72)
 
-    # Header
-    pdf.set_font("Helvetica", "B", 22)
-    pdf.set_xy(ml, 18)
-    pdf.cell(content_w, 10, name, align="C", new_x="LMARGIN", new_y="NEXT")
+    # ── Header ─────────────────────────────────────────────
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.set_text_color(26, 54, 93)
+    pdf.set_x(ml)
+    pdf.cell(content_w, 9, name, align="C", new_x="LMARGIN", new_y="NEXT")
 
     contact_parts = [p for p in [loc, email, phone, linkedin, github_acc] if p]
     if contact_parts:
         pdf.set_font("Helvetica", "", 8.5)
-        pdf.set_xy(ml, pdf.get_y() + 2)
-        pdf.cell(content_w, 5, "  |  ".join(contact_parts), align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(74, 85, 104)
+        pdf.set_x(ml)
+        pdf.cell(content_w, 4.5, "  |  ".join(contact_parts), align="C", new_x="LMARGIN", new_y="NEXT")
 
-    pdf.ln(3)
+    pdf.ln(2)
     pdf.set_draw_color(26, 82, 118)
-    pdf.set_line_width(0.5)
+    pdf.set_line_width(0.7)
     pdf.line(ml, pdf.get_y(), ml + content_w, pdf.get_y())
-    pdf.ln(5)
+    pdf.ln(3)
 
-    # Summary
+    # ── Summary ────────────────────────────────────────────
     if summary:
         section_header("Summary")
-        pdf.set_font("Helvetica", "", 10)
+        pdf.set_font("Helvetica", "", 9.5)
+        pdf.set_text_color(45, 55, 72)
         pdf.set_x(ml)
-        pdf.multi_cell(content_w, 5, ascii_safe(summary), new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(2)
+        pdf.multi_cell(content_w, 4.5, summary, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1)
 
-    # Education
+    # ── Education ──────────────────────────────────────────
     if education:
         section_header("Education")
         for item in education:
             if isinstance(item, dict):
-                text = ascii_safe(item.get("degree") or item.get("name") or item.get("text", ""))
+                degree = ascii_safe(item.get("degree") or item.get("name") or item.get("text", ""))
                 school = ascii_safe(item.get("school", ""))
                 year = ascii_safe(item.get("year", ""))
                 gpa = ascii_safe(item.get("gpa", ""))
-                if text:
-                    pdf.set_font("Helvetica", "B", 10)
-                    pdf.set_x(ml)
-                    if year:
-                        pdf.cell(content_w - 30, 5, text, new_x="LEFT", new_y="TOP")
-                        pdf.set_font("Helvetica", "I", 9)
-                        pdf.cell(30, 5, year, align="R", new_x="LMARGIN", new_y="NEXT")
-                    else:
-                        pdf.cell(content_w, 5, text, new_x="LMARGIN", new_y="NEXT")
-                if school:
-                    pdf.set_font("Helvetica", "I", 9)
-                    pdf.set_x(ml)
-                    pdf.cell(content_w, 4, school, new_x="LMARGIN", new_y="NEXT")
-                if gpa:
-                    pdf.set_font("Helvetica", "", 9)
-                    pdf.set_text_color(85, 85, 85)
-                    pdf.set_x(ml)
-                    pdf.cell(content_w, 4, f"GPA: {gpa}", new_x="LMARGIN", new_y="NEXT")
-                    pdf.set_text_color(45, 45, 45)
-            else:
-                pdf.set_font("Helvetica", "B", 10)
-                pdf.set_x(ml)
-                pdf.cell(content_w, 5, ascii_safe(str(item)), new_x="LMARGIN", new_y="NEXT")
-            pdf.ln(1.5)
-        pdf.ln(2)
+                if not degree:
+                    continue
 
-    # Experience
+                pdf.set_font("Helvetica", "B", 9.5)
+                pdf.set_text_color(26, 32, 44)
+                pdf.set_x(ml)
+                date_w = 40 if year else 0
+                pdf.cell(content_w - date_w, 4.8, degree, new_x="RIGHT", new_y="TOP")
+                if year:
+                    pdf.set_font("Helvetica", "I", 8.5)
+                    pdf.set_text_color(113, 128, 150)
+                    pdf.cell(date_w, 4.8, year, align="R", new_x="LMARGIN", new_y="NEXT")
+                else:
+                    pdf.ln(4.8)
+
+                sub_parts = []
+                if school:
+                    sub_parts.append(school)
+                if gpa:
+                    sub_parts.append(f"GPA: {gpa}")
+                if sub_parts:
+                    pdf.set_font("Helvetica", "I", 9)
+                    pdf.set_text_color(74, 85, 104)
+                    pdf.set_x(ml)
+                    pdf.cell(content_w, 4.2, " -- ".join(sub_parts), new_x="LMARGIN", new_y="NEXT")
+            else:
+                pdf.set_font("Helvetica", "", 9.5)
+                pdf.set_x(ml)
+                pdf.multi_cell(content_w, 4.5, ascii_safe(str(item)), new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(1.5)
+
+    # ── Experience ─────────────────────────────────────────
     if experience:
         section_header("Experience")
         for item in experience:
@@ -1769,94 +1876,131 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                 company = ascii_safe(item.get("company", ""))
                 dates = ascii_safe(item.get("dates", ""))
                 exp_loc = ascii_safe(item.get("location", ""))
-                if role:
-                    pdf.set_font("Helvetica", "B", 10)
-                    pdf.set_x(ml)
-                    pdf.cell(content_w - 40, 5, role, new_x="LEFT", new_y="TOP")
+                bullets = item.get("bullets", [])
+                if not role and not company:
+                    continue
+
+                pdf.set_font("Helvetica", "B", 9.5)
+                pdf.set_text_color(26, 32, 44)
+                pdf.set_x(ml)
+                date_w = 45 if dates else 0
+                pdf.cell(content_w - date_w, 4.8, role or company, new_x="RIGHT", new_y="TOP")
+                if dates:
+                    pdf.set_font("Helvetica", "I", 8.5)
+                    pdf.set_text_color(113, 128, 150)
+                    pdf.cell(date_w, 4.8, dates, align="R", new_x="LMARGIN", new_y="NEXT")
+                else:
+                    pdf.ln(4.8)
+
+                sub_parts = []
+                if company and role:
+                    sub_parts.append(company)
+                if exp_loc:
+                    sub_parts.append(exp_loc)
+                if sub_parts:
                     pdf.set_font("Helvetica", "I", 9)
-                    pdf.cell(40, 5, dates, align="R", new_x="LMARGIN", new_y="NEXT")
-                if company:
-                    subtitle = company + (f" -- {exp_loc}" if exp_loc else "")
-                    pdf.set_font("Helvetica", "I", 9)
+                    pdf.set_text_color(74, 85, 104)
                     pdf.set_x(ml)
-                    pdf.cell(content_w, 4, subtitle, new_x="LMARGIN", new_y="NEXT")
-                for bullet in item.get("bullets", []):
-                    clean = ascii_safe(re.sub(r'^[\u2022\-*\s]+', '', str(bullet)).strip())
-                    if clean:
-                        pdf.set_font("Helvetica", "", 9.5)
+                    pdf.cell(content_w, 4.2, " -- ".join(sub_parts), new_x="LMARGIN", new_y="NEXT")
+
+                for b in bullets:
+                    b_clean = ascii_safe(re.sub(r'^[-*•\s]+', '', str(b)).strip())
+                    if b_clean:
+                        pdf.set_font("Helvetica", "", 9)
+                        pdf.set_text_color(45, 55, 72)
                         pdf.set_x(ml + 3)
-                        pdf.multi_cell(content_w - 5, 4.5, f"- {clean}", new_x="LMARGIN", new_y="NEXT")
+                        pdf.multi_cell(content_w - 3, 4.2, f"-  {b_clean}", new_x="LMARGIN", new_y="NEXT")
             else:
                 pdf.set_font("Helvetica", "", 9)
                 pdf.set_x(ml)
-                pdf.multi_cell(content_w, 5, ascii_safe(str(item)), new_x="LMARGIN", new_y="NEXT")
+                pdf.multi_cell(content_w, 4.5, ascii_safe(str(item)), new_x="LMARGIN", new_y="NEXT")
             pdf.ln(1.5)
-        pdf.ln(2)
 
-    # Skills
+    # ── Skills ─────────────────────────────────────────────
     if skills:
         section_header("Skills")
-        pdf.set_font("Helvetica", "", 9)
-        pdf.set_x(ml)
-        # Check if skills contain categories (colon-separated like "Languages: Python, Java")
-        for skill_line in skills:
-            clean = ascii_safe(skill_line)
-            pdf.set_font("Helvetica", "", 9)
-            pdf.set_x(ml)
-            pdf.multi_cell(content_w, 5, clean, new_x="LMARGIN", new_y="NEXT")
-            pdf.ln(0.5)
-        pdf.ln(2)
+        for skill in skills:
+            s_clean = ascii_safe(str(skill).strip())
+            if ":" in s_clean:
+                cat, val = s_clean.split(":", 1)
+                pdf.set_font("Helvetica", "B", 9)
+                pdf.set_text_color(26, 32, 44)
+                cat_str = f"{cat.strip()}: "
+                cat_w = pdf.get_string_width(cat_str) + 1
+                pdf.set_x(ml)
+                pdf.cell(cat_w, 4.5, cat_str, new_x="RIGHT", new_y="TOP")
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(74, 85, 104)
+                pdf.multi_cell(content_w - cat_w, 4.5, val.strip(), new_x="LMARGIN", new_y="NEXT")
+            else:
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(45, 55, 72)
+                pdf.set_x(ml)
+                pdf.multi_cell(content_w, 4.5, s_clean, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1)
 
-    # Projects
+    # ── Projects ───────────────────────────────────────────
     if projects:
         section_header("Projects")
         for item in projects:
             if isinstance(item, dict):
-                proj_title = ascii_safe(item.get("title") or item.get("name", ""))
+                p_name = ascii_safe(item.get("name") or item.get("title", ""))
                 tech = ascii_safe(item.get("tech", ""))
-                proj_link = ascii_safe(item.get("link", ""))
-                if proj_title:
-                    pdf.set_font("Helvetica", "B", 10)
-                    pdf.set_x(ml)
-                    pdf.cell(content_w, 5, proj_title, new_x="LMARGIN", new_y="NEXT")
+                link = ascii_safe(item.get("link", ""))
+                desc = ascii_safe(item.get("description", ""))
+                bullets = item.get("bullets", [])
+                if not p_name:
+                    continue
+
+                pdf.set_font("Helvetica", "B", 9.5)
+                pdf.set_text_color(26, 32, 44)
+                pdf.set_x(ml)
+                tech_w = pdf.get_string_width(tech) + 2 if tech else 0
+                pdf.cell(content_w - tech_w, 4.8, p_name, new_x="RIGHT", new_y="TOP")
                 if tech:
                     pdf.set_font("Helvetica", "I", 8.5)
-                    pdf.set_text_color(41, 128, 185)
-                    pdf.set_x(ml)
-                    pdf.cell(content_w, 4, tech, new_x="LMARGIN", new_y="NEXT")
-                    pdf.set_text_color(45, 45, 45)
-                if proj_link:
+                    pdf.set_text_color(43, 108, 176)
+                    pdf.cell(tech_w, 4.8, tech, align="R", new_x="LMARGIN", new_y="NEXT")
+                else:
+                    pdf.ln(4.8)
+
+                if link:
                     pdf.set_font("Helvetica", "", 8)
+                    pdf.set_text_color(43, 108, 176)
                     pdf.set_x(ml)
-                    pdf.cell(content_w, 4, proj_link, new_x="LMARGIN", new_y="NEXT")
-                for bullet in item.get("bullets", []):
-                    clean = ascii_safe(re.sub(r'^[\u2022\-*\s]+', '', str(bullet)).strip())
-                    if clean:
-                        pdf.set_font("Helvetica", "", 9.5)
-                        pdf.set_x(ml + 3)
-                        pdf.multi_cell(content_w - 5, 4.5, f"- {clean}", new_x="LMARGIN", new_y="NEXT")
-                desc = ascii_safe(item.get("description", ""))
-                if desc and not item.get("bullets"):
+                    pdf.cell(content_w, 3.8, link, new_x="LMARGIN", new_y="NEXT")
+
+                if desc:
                     pdf.set_font("Helvetica", "", 9)
+                    pdf.set_text_color(45, 55, 72)
                     pdf.set_x(ml)
-                    pdf.multi_cell(content_w, 4.5, desc, new_x="LMARGIN", new_y="NEXT")
+                    pdf.multi_cell(content_w, 4.2, desc, new_x="LMARGIN", new_y="NEXT")
+
+                for b in bullets:
+                    b_clean = ascii_safe(re.sub(r'^[-*•\s]+', '', str(b)).strip())
+                    if b_clean:
+                        pdf.set_font("Helvetica", "", 9)
+                        pdf.set_text_color(45, 55, 72)
+                        pdf.set_x(ml + 3)
+                        pdf.multi_cell(content_w - 3, 4.2, f"-  {b_clean}", new_x="LMARGIN", new_y="NEXT")
             else:
                 pdf.set_font("Helvetica", "", 9)
                 pdf.set_x(ml)
-                pdf.multi_cell(content_w, 5, ascii_safe(str(item)), new_x="LMARGIN", new_y="NEXT")
+                pdf.multi_cell(content_w, 4.5, ascii_safe(str(item)), new_x="LMARGIN", new_y="NEXT")
             pdf.ln(1.5)
-        pdf.ln(2)
 
-    # Certifications
+    # ── Certifications ─────────────────────────────────────
     if certifications:
         section_header("Certifications")
         for item in certifications:
-            text = ascii_safe(item.get("text", "") if isinstance(item, dict) else str(item))
-            if text:
+            c_text = ascii_safe(item.get("text", "") if isinstance(item, dict) else str(item))
+            c_clean = re.sub(r'^[-*•\s]+', '', c_text).strip()
+            if c_clean:
                 pdf.set_font("Helvetica", "", 9)
-                pdf.set_x(ml)
-                pdf.cell(content_w, 5, f"- {text}", new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(2)
+                pdf.set_text_color(45, 55, 72)
+                pdf.set_x(ml + 3)
+                pdf.cell(content_w - 3, 4.2, f"-  {c_clean}", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1)
 
     return bytes(pdf.output())
 
@@ -1873,7 +2017,10 @@ async def set_mode(session_id: str, data: dict):
     s["mode"] = mode
 
     if mode == "resume":
-        resume_analysis = analyze_document_for_resume(s["file_text"])
+        try:
+            resume_analysis = analyze_document_for_resume(s["file_text"])
+        except Exception:
+            resume_analysis = {}
         s["resume_analysis"] = resume_analysis
         s["resume_answers"] = {}
         s["resume_questions_asked"] = []
@@ -1882,9 +2029,13 @@ async def set_mode(session_id: str, data: dict):
         s["resume_html"] = None
         s["resume_data"] = None
 
-        q_result = generate_resume_question(
-            s["file_text"], s["resume_answers"], s["resume_questions_asked"], resume_analysis
-        )
+        try:
+            q_result = generate_resume_question(
+                s["file_text"], s["resume_answers"], s["resume_questions_asked"], resume_analysis
+            )
+        except Exception:
+            q_result = {"ready": True}
+
         if q_result.get("ready"):
             s["resume_ready"] = True
             return {"mode": mode, "ready": True}
@@ -1909,9 +2060,12 @@ async def set_mode(session_id: str, data: dict):
 
     question = None
     if not analysis.get("ready", False):
-        q_result = generate_question(s["file_text"], {}, [], analysis)
-        if not q_result.get("ready"):
-            question = q_result
+        try:
+            q_result = generate_question(s["file_text"], {}, [], analysis)
+            if not q_result.get("ready"):
+                question = q_result
+        except Exception:
+            question = None
     if question:
         s["_last_qtype"] = question.get("type", "")
 
@@ -1932,9 +2086,13 @@ async def ask_resume_question(session_id: str):
         raise HTTPException(404, "Session not found")
     _touch_session(session_id)
 
-    q_result = generate_resume_question(
-        s["file_text"], s["resume_answers"], s["resume_questions_asked"], s.get("resume_analysis")
-    )
+    try:
+        q_result = generate_resume_question(
+            s["file_text"], s["resume_answers"], s["resume_questions_asked"], s.get("resume_analysis")
+        )
+    except Exception:
+        q_result = {"ready": True}
+
     if q_result.get("ready"):
         s["resume_ready"] = True
         return {"ready": True}
@@ -1950,14 +2108,16 @@ async def submit_resume_answer(session_id: str, data: dict):
         raise HTTPException(404, "Session not found")
     _touch_session(session_id)
 
-    question = data.get("question", "")
-    answer = data.get("answer", "")
-    if not isinstance(question, str):
-        return {"error": "question must be a string", "question": "", "options": [], "context": "", "type": ""}
-    s["resume_answers"][question] = answer
-    s["resume_questions_asked"].append(question)
+    question = str(data.get("question") or "")
+    answer = str(data.get("answer") or "")
+    if question:
+        s["resume_answers"][question] = answer
+        s["resume_questions_asked"].append(question)
 
     qtype = s.get("_last_resume_qtype", "")
+
+    if "resume_analysis" not in s or not isinstance(s.get("resume_analysis"), dict):
+        s["resume_analysis"] = {}
 
     # Handle structured fields
     if qtype in ("name", "name_confirm"):
@@ -1967,7 +2127,6 @@ async def submit_resume_answer(session_id: str, data: dict):
         elif answer.lower().startswith("y"):
             s["resume_answers"]["_name_ok"] = True
         else:
-            # User said no — clear extracted name so the next gate asks for typed input
             s["resume_analysis"]["name"] = ""
             s["resume_answers"]["_name_ok"] = False
 
@@ -1987,18 +2146,13 @@ async def submit_resume_answer(session_id: str, data: dict):
             s["resume_analysis"]["phone"] = phone
         s["resume_answers"]["_phone_ok"] = True
 
-    # Check if user said no more
-    user_said_no = any(
-        answer.lower().startswith("no") and any(w in question.lower() for w in ("more", "additional", "details"))
-        for question in [question]
-    )
-
     try:
         q_result = generate_resume_question(
             s["file_text"], s["resume_answers"], s["resume_questions_asked"], s.get("resume_analysis")
         )
     except Exception:
-        q_result = {}
+        q_result = {"ready": True}
+
     if q_result.get("ready"):
         s["resume_ready"] = True
         return {"ready": True}
@@ -2020,16 +2174,15 @@ def generate_resume_stream_endpoint(session_id: str):
         try:
             for token in generate_resume_stream(s["file_text"], s["resume_answers"], s.get("resume_analysis", {})):
                 resume_text += token
-                safe = token.replace("\n", "\\n").replace("\r", "\\r")
-                yield f"data: {json.dumps({'type': 'token', 'content': safe})}\n\n"
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
 
             s["resume_text"] = resume_text
             resume_data = parse_resume_text(resume_text)
-            if s.get("resume_analysis", {}).get("name"):
+            if s.get("resume_analysis", {}).get("name") and (not resume_data.get("name") or resume_data.get("name") in ("Resume", "Your Name")):
                 resume_data["name"] = s["resume_analysis"]["name"]
-            if s.get("resume_analysis", {}).get("email"):
+            if s.get("resume_analysis", {}).get("email") and not resume_data.get("email"):
                 resume_data["email"] = s["resume_analysis"]["email"]
-            if s.get("resume_analysis", {}).get("phone"):
+            if s.get("resume_analysis", {}).get("phone") and not resume_data.get("phone"):
                 resume_data["phone"] = s["resume_analysis"]["phone"]
 
             html = generate_resume_html(resume_data)
@@ -2041,6 +2194,7 @@ def generate_resume_stream_endpoint(session_id: str):
                 "resume_html": html,
                 "resume_data": resume_data,
                 "download_html": f"/api/download-resume/{session_id}/html",
+                "download_pdf": f"/api/download-resume/{session_id}/pdf",
                 "filename_html": f"{resume_data.get('name', 'Resume').replace(' ', '_')}_Resume.html",
             }
             yield f"data: {json.dumps({'type': 'done', 'result': result})}\n\n"
@@ -2060,12 +2214,11 @@ async def save_resume(session_id: str, data: dict):
     resume_text = data.get("resume_text", s.get("resume_text", ""))
     s["resume_text"] = resume_text
     resume_data = parse_resume_text(resume_text)
-    # Overlay contact info from analysis
-    if s.get("resume_analysis", {}).get("name"):
+    if s.get("resume_analysis", {}).get("name") and (not resume_data.get("name") or resume_data.get("name") in ("Resume", "Your Name")):
         resume_data["name"] = s["resume_analysis"]["name"]
-    if s.get("resume_analysis", {}).get("email"):
+    if s.get("resume_analysis", {}).get("email") and not resume_data.get("email"):
         resume_data["email"] = s["resume_analysis"]["email"]
-    if s.get("resume_analysis", {}).get("phone"):
+    if s.get("resume_analysis", {}).get("phone") and not resume_data.get("phone"):
         resume_data["phone"] = s["resume_analysis"]["phone"]
 
     html = generate_resume_html(resume_data)
@@ -2077,6 +2230,7 @@ async def save_resume(session_id: str, data: dict):
         "resume_html": html,
         "resume_data": resume_data,
         "download_html": f"/api/download-resume/{session_id}/html",
+        "download_pdf": f"/api/download-resume/{session_id}/pdf",
         "filename_html": f"{resume_data.get('name', 'Resume').replace(' ', '_')}_Resume.html",
     }
 
@@ -2098,11 +2252,11 @@ async def edit_resume_endpoint(session_id: str, data: dict):
     edited = edit_resume(current, instruction)
     s["resume_text"] = edited
     resume_data = parse_resume_text(edited)
-    if s.get("resume_analysis", {}).get("name"):
+    if s.get("resume_analysis", {}).get("name") and (not resume_data.get("name") or resume_data.get("name") in ("Resume", "Your Name")):
         resume_data["name"] = s["resume_analysis"]["name"]
-    if s.get("resume_analysis", {}).get("email"):
+    if s.get("resume_analysis", {}).get("email") and not resume_data.get("email"):
         resume_data["email"] = s["resume_analysis"]["email"]
-    if s.get("resume_analysis", {}).get("phone"):
+    if s.get("resume_analysis", {}).get("phone") and not resume_data.get("phone"):
         resume_data["phone"] = s["resume_analysis"]["phone"]
 
     html = generate_resume_html(resume_data)
@@ -2114,6 +2268,7 @@ async def edit_resume_endpoint(session_id: str, data: dict):
         "resume_html": html,
         "resume_data": resume_data,
         "download_html": f"/api/download-resume/{session_id}/html",
+        "download_pdf": f"/api/download-resume/{session_id}/pdf",
         "filename_html": f"{resume_data.get('name', 'Resume').replace(' ', '_')}_Resume.html",
     }
 
@@ -2220,6 +2375,7 @@ async def preview_paper(session_id: str, fmt: str):
         return Response(content=s["html_content"], media_type="text/html")
     raise HTTPException(404, "Format not found")
 
+@app.get("/api/download/{session_id}/{fmt}")
 @app.get("/api/download-paper/{session_id}/{fmt}")
 async def download_paper(session_id: str, fmt: str, format: str = Query("procomm")):
     s = sessions.get(session_id)
@@ -2242,6 +2398,35 @@ async def download_paper(session_id: str, fmt: str, format: str = Query("procomm
         return Response(content=docx_bytes, media_type=media,
                         headers={"Content-Disposition": f'attachment; filename="{base}.docx"'})
     raise HTTPException(404, "Format not found")
+
+
+# ─── Serve Frontend SPA in Production ──────────────────────────────────────────
+_dist_candidates = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "dist")),
+    "/app/frontend/dist",
+    "/app/backend/dist",
+]
+
+_frontend_dist = next((d for d in _dist_candidates if os.path.isdir(d)), None)
+
+if _frontend_dist:
+    _assets_dir = os.path.join(_frontend_dist, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(404, "API route not found")
+        target = os.path.join(_frontend_dist, full_path)
+        if os.path.isfile(target):
+            return FileResponse(target)
+        index_file = os.path.join(_frontend_dist, "index.html")
+        if os.path.isfile(index_file):
+            return FileResponse(index_file)
+        raise HTTPException(404, "Frontend file not found")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
