@@ -460,7 +460,10 @@ INSTRUCTION: {instruction}
 Rewrite the COMPLETE paper applying the instruction. Strictly preserve the existing ##-prefixed section structure of the CURRENT PAPER — only include the sections that are already present, in their current order. Do NOT invent or add new sections (such as Literature Review, Methodology, Results, Limitations, or About the Authors) unless the instruction explicitly asks for them. Preserve all unchanged content verbatim. Do NOT invent numerical results, statistics, or metrics not already present.
 If the instruction changes the paper title, output the new title as the VERY FIRST LINE in the exact format: # New Title
 Otherwise, do not include any top-level title line.
-Never include reasoning, chain-of-thought, or commentary — output only the revised paper."""
+Never include reasoning, chain-of-thought, or commentary — output only the revised paper.
+Begin your ENTIRE final answer with the exact single line:
+{_PAPER_MARKER}
+Then, on the following line, the revised paper itself. Nothing else before that marker line."""
     messages = [
         {"role": "system", "content": f"You edit IEEE-format research papers using only ##-prefixed section headings. Output only the paper, never reasoning or commentary. Never add sections that aren't in the current paper.\n\n{CONTENT_RULES}"},
         {"role": "user", "content": prompt}
@@ -469,6 +472,7 @@ Never include reasoning, chain-of-thought, or commentary — output only the rev
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+    text = find_paper_start(text)
     return text.strip()
 
 def _render_audit_for_generation(analysis: dict) -> str:
@@ -548,47 +552,52 @@ def find_paper_start(text: str) -> str:
     return text
 
 
+def _dedupe_drafts(text: str) -> str:
+    """Collapse repeated paper drafts. Free-tier models sometimes emit the paper
+    several times (identical section blocks) inside one response; keep only the
+    first full run. Operates on heading-structured text and is a no-op otherwise."""
+    if not text or "\n" not in text:
+        return text
+    import re as _re
+    heading_re = _re.compile(r'^\s*#{1,3}[ \t]+\S')
+    lines = text.split("\n")
+    idx = [i for i, l in enumerate(lines) if heading_re.match(l)]
+
+    def nxt(j: int) -> int:
+        return idx[j + 1] if j + 1 < len(idx) else len(lines)
+
+    def sig(j: int) -> str:
+        return _re.sub(r"\s+", " ", " ".join(lines[idx[j]:nxt(j)])).strip()
+
+    if len(idx) < 4:
+        return text
+    sigs = [sig(j) for j in range(len(idx))]
+    for length in range(len(idx) // 2, 3, -1):
+        for start in range(0, len(idx) - 2 * length + 1):
+            if sigs[start:start + length] == sigs[start + length:start + 2 * length]:
+                cut = idx[start + length]
+                return "\n".join(lines[:cut]).strip()
+    return text
+
+
 def _flow_like_paper(tokens):
-    """Stream tokens but drop leading chain-of-thought: nothing is yielded until
-    the buffered text contains an output marker, then everything after it flows.
-    If no marker ever arrives, the buffered text is released through
-    `find_paper_start` (marker or heading fallback)."""
-    pending = ""
-    started = False
-    last_check = 0
+    """Buffer the entire stream and emit only the final deliverable. This keeps
+    chain-of-thought out of the preview: nothing is yielded until the response
+    finishes, then the text is sliced at the LAST output marker (free models echo
+    the marker and draft the paper repeatedly inside their thinking), duplicate
+    draft blocks are collapsed, and the clean remainder is emitted in chunks."""
+    buf = []
     for token in tokens:
-        if started:
-            yield token
-            continue
-        pending += token
-        if len(pending) - last_check >= 256:
-            last_check = len(pending)
-            for marker in _OUTPUT_MARKERS:
-                idx = pending.find(marker)
-                if idx != -1:
-                    rest = pending[idx + len(marker):].lstrip("\n\r")
-                    if rest.strip():
-                        started = True
-                        yield rest
-                    pending = ""
-                    break
-            if started:
-                continue
-            if len(pending) > 120000:
-                emit, pending = pending, ""
-                if emit.strip():
-                    yield emit
-                continue
-        elif len(pending) > 120000:
-            emit, pending = pending, ""
-            if emit.strip():
-                yield emit
-    if not started:
-        start = find_paper_start(pending)
-        if start.strip():
-            yield start
-        elif pending.strip():
-            yield pending
+        buf.append(token)
+    text = "".join(buf)
+    start = find_paper_start(text)
+    if not start.strip():
+        return
+    cleaned = _dedupe_drafts(start)
+    if cleaned.strip():
+        start = cleaned
+    for i in range(0, len(start), 1200):
+        yield start[i:i + 1200]
 
 
 def _extract_references_from_text(file_text: str, limit: int = 10) -> list:
@@ -1190,7 +1199,10 @@ CURRENT RESUME:
 INSTRUCTION: {instruction}
 
 Rewrite the COMPLETE resume applying the instruction. Strictly preserve the existing ##-prefixed section structure — only include sections that are already present, in their current order. Do NOT invent or add new sections unless the instruction explicitly asks for them. Preserve all unchanged content verbatim. Do NOT invent specific numbers, metrics, or achievements not already present.
-Never include reasoning, chain-of-thought, or commentary — output only the revised resume."""
+Never include reasoning, chain-of-thought, or commentary — output only the revised resume.
+Begin your ENTIRE final answer with the exact single line:
+{_RESUME_MARKER}
+Then, on the following line, the revised resume itself. Nothing else before that marker line."""
     messages = [
         {"role": "system", "content": "You edit professional resumes using only ##-prefixed section headings. Output only the resume, never reasoning or commentary."},
         {"role": "user", "content": prompt}
@@ -1200,6 +1212,7 @@ Never include reasoning, chain-of-thought, or commentary — output only the rev
         text = text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+        text = find_paper_start(text)
         return text.strip()
     except Exception:
         return resume_text
