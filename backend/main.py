@@ -19,7 +19,8 @@ from config import MAX_FILE_SIZE
 import fitz
 from services.llm_service import (
     analyze_document, generate_question, generate_paper_stream, edit_paper,
-    analyze_document_for_resume, generate_resume_question, generate_resume_stream, edit_resume
+    analyze_document_for_resume, generate_resume_question, generate_resume_stream, edit_resume,
+    find_paper_start
 )
 
 # ─── Paper Format presets ──────────────────────────────────────────────────────
@@ -233,13 +234,38 @@ def generate_ieee_html(title, authors, abstract, sections, keywords, domain, ref
 </div>
 </body></html>"""
 
+def _extract_pdf_text_pypdf2(file_path: str) -> str:
+    text = ""
+    try:
+        with open(file_path, 'rb') as f:
+            for page in PyPDF2.PdfReader(f).pages:
+                text += (page.extract_text() or "") + "\n"
+    except Exception:
+        text = ""
+    return text
+
+
+def _extract_pdf_text_fitz(file_path: str) -> str:
+    text = ""
+    try:
+        doc = fitz.open(file_path)
+        try:
+            text = "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+    except Exception:
+        text = ""
+    return text
+
+
 def extract_text(file_path: str, filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
     if ext == '.pdf':
-        text = ""
-        with open(file_path, 'rb') as f:
-            for page in PyPDF2.PdfReader(f).pages:
-                text += page.extract_text() + "\n"
+        # PyPDF2 first (fast); fall back to PyMuPDF when it yields nothing
+        # usable — PyMuPDF handles many scanned/laid-out PDFs far better.
+        text = _extract_pdf_text_pypdf2(file_path)
+        if len(text.strip()) < 50:
+            text = _extract_pdf_text_fitz(file_path)
         return text
     elif ext == '.docx':
         text = ""
@@ -283,6 +309,20 @@ def extract_text_per_page(file_path: str) -> dict:
                 t = page.extract_text()
                 if t.strip():
                     pages[i] = t.strip()
+        # If PyPDF2 recovered almost nothing, try PyMuPDF instead.
+        if sum(len(v) for v in pages.values()) < 50 and file_path.lower().endswith(".pdf"):
+            try:
+                doc = fitz.open(file_path)
+                try:
+                    pages = {
+                        i: (page.get_text() or "").strip()
+                        for i, page in enumerate(doc, 1)
+                        if (page.get_text() or "").strip()
+                    }
+                finally:
+                    doc.close()
+            except Exception:
+                pass
     except Exception:
         pass
     return pages
@@ -511,11 +551,7 @@ async def submit_paper_answer(session_id: str, data: dict):
     return {"question": q_result.get("question", ""), "options": q_result.get("options", []), "context": q_result.get("context", ""), "type": q_result.get("type", "")}
 
 def strip_reasoning(text):
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if _heading_text(line):
-            return "\n".join(lines[i:])
-    return text
+    return find_paper_start(text)
 
 def _heading_text(line):
     stripped = line.strip()
@@ -665,8 +701,8 @@ def handle_generate_paper_stream(session_id: str):
                 safe = token.replace("\n", "\\n").replace("\r", "\\r")
                 yield f"data: {json.dumps({'type': 'token', 'content': safe})}\n\n"
 
-            s["paper_text"] = paper_text
             result = parse_paper_text(paper_text, s["analysis"], session_id)
+            s["paper_text"] = result["paper_text"]
             s["html_content"] = result["html_content"]
             s["paper_json"] = result.get("paper_json")
             yield f"data: {json.dumps({'type': 'done', 'result': result})}\n\n"

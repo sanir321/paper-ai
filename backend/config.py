@@ -4,10 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OPENCODE_ZEN_API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "")
-OPENCODE_ZEN_BASE_URL = os.environ.get("OPENCODE_ZEN_BASE_URL", "https://opencode.ai/zen/v1")
-LLM_MODEL = os.environ.get("LLM_MODEL", "laguna-s-2.1-free")
+EXPERIENTIAL_API_KEY = os.environ.get("EXPERIENTIAL_API_KEY", "")
+EXPERIENTIAL_BASE_URL = os.environ.get("EXPERIENTIAL_BASE_URL", "https://api.kilo.ai/api/gateway")
+LLM_MODEL = os.environ.get("LLM_MODEL", "kilo-auto/free")
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
-if not OPENCODE_ZEN_API_KEY:
-    print("WARNING: OPENCODE_ZEN_API_KEY is not set. The app will fail when calling the LLM.", file=sys.stderr)
+if not EXPERIENTIAL_API_KEY:
+    print("INFO: No API key set. Using Kilo Auto Free (anonymous, rate-limited).", file=sys.stderr)

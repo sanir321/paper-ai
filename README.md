@@ -81,7 +81,7 @@ python main.py
 
 | Variable | Where | Description |
 |----------|-------|-------------|
-| `OPENCODE_ZEN_API_KEY` | Backend | API key for the LLM (Nemotron-3-Ultra-Free) |
+| `EXPERIENTIAL_API_KEY` | Backend | API key for the LLM (Kilo Auto Free — https://api.kilo.ai) |
 | `VITE_API_BASE_URL` | Frontend | Backend URL (default: `http://localhost:8080`) |
 
 Create a `.env` file in `backend/` or set them in your shell. For the frontend, create `frontend/.env`:
@@ -98,7 +98,7 @@ This project runs as **two Railway services** from the same GitHub repo (`sanir3
 - **Root directory:** `backend`
 - **Build:** `pip install -r requirements.txt`
 - **Start:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
-- **Env:** Add `OPENCODE_ZEN_API_KEY`
+- **Env:** Add `EXPERIENTIAL_API_KEY`
 
 ### Frontend Service
 - **Root directory:** `frontend`

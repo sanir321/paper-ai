@@ -699,6 +699,26 @@ export default function PaperWizard({ onNewSession }) {
             <div className="rounded-2xl border transition-all duration-200 bg-surface-card border-hairline">
               <div className="p-5 md:p-8">
                 <h2 className="text-xl md:text-2xl font-display mb-4 font-normal text-ink" style={{ letterSpacing: '-0.5px' }}>Analysis complete</h2>
+
+                {typeof analysis.completeness_score === 'number' && (
+                  <div className="mb-6">
+                    <div className="flex justify-between mb-1.5">
+                      <p className="text-xs font-mono uppercase text-muted">Completeness</p>
+                      <p className="text-xs font-mono text-muted">{analysis.completeness_score}%</p>
+                    </div>
+                    <div className="h-2 rounded-full bg-canvas border border-hairline overflow-hidden">
+                      <div className="h-full rounded-full"
+                        style={{ width: `${Math.min(100, Math.max(0, analysis.completeness_score))}%`,
+                          backgroundColor: analysis.completeness_score >= 70 ? '#4a9d6f' : analysis.completeness_score >= 40 ? '#d9a13b' : '#c64545' }} />
+                    </div>
+                    <p className="text-xs mt-1.5 text-muted">
+                      {analysis.completeness_score >= 70 ? 'Well structured — just a few questions to verify accuracy.' :
+                        analysis.completeness_score >= 40 ? 'Readable, but some key details are missing or unclear.' :
+                        'Mostly notes — the interview will gather what the document lacks.'}
+                    </p>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                   <div className="rounded-2xl p-4 border border-hairline bg-canvas">
                     <p className="text-xs font-mono uppercase mb-1 text-muted">Title</p>
@@ -709,6 +729,46 @@ export default function PaperWizard({ onNewSession }) {
                     <p className="font-medium text-ink">{analysis.domain || 'General'}</p>
                   </div>
                 </div>
+
+                {analysis.abstract_summary && (
+                  <div className="mb-6">
+                    <p className="text-xs font-mono uppercase mb-2 text-muted">What the document is about</p>
+                    <p className="text-sm text-ink leading-relaxed">{analysis.abstract_summary}</p>
+                  </div>
+                )}
+
+                {analysis.key_claims?.length > 0 && (
+                  <div className="mb-6">
+                    <p className="text-xs font-mono uppercase mb-2 text-muted">Key Claims</p>
+                    <div className="space-y-2">
+                      {analysis.key_claims.map((c, i) => (
+                        <div key={i} className="rounded-xl px-4 py-3 bg-canvas border border-hairline">
+                          <p className="text-sm text-ink">{typeof c === 'string' ? c : c.claim}</p>
+                          {typeof c === 'object' && c.evidence && (
+                            <p className="text-xs mt-1 text-muted italic">&ldquo;{c.evidence}&rdquo;</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {analysis.key_findings?.length > 0 && (
+                  <div className="mb-6">
+                    <p className="text-xs font-mono uppercase mb-2 text-muted">Key Findings</p>
+                    <div className="space-y-2">
+                      {analysis.key_findings.map((f, i) => (
+                        <div key={i} className="rounded-xl px-4 py-3 bg-canvas border border-hairline">
+                          <p className="text-sm text-ink">{typeof f === 'string' ? f : f.finding}</p>
+                          {typeof f === 'object' && f.evidence && (
+                            <p className="text-xs mt-1 text-muted italic">&ldquo;{f.evidence}&rdquo;</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {analysis.present_sections && (
                   <div className="mb-6">
                     <p className="text-xs font-mono uppercase mb-2 text-muted">Detected Sections</p>
@@ -719,13 +779,62 @@ export default function PaperWizard({ onNewSession }) {
                     </div>
                   </div>
                 )}
-                {analysis.missing_info?.length > 0 && (
+
+                {(analysis.missing_info?.length > 0 || analysis.missing_sections?.length > 0) && (
                   <div className="mb-6">
                     <p className="text-xs font-mono uppercase mb-2 text-muted">Missing Information</p>
                     <div className="flex flex-wrap gap-2">
-                      {analysis.missing_info.map(m => (
+                      {(analysis.missing_info || analysis.missing_sections || []).map(m => (
                         <span key={m} className="px-3 py-1 text-sm rounded-full"
                           style={{ backgroundColor: '#fdf0ef', border: '1px solid #e8b4b4', color: '#c64545' }}>{m}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {((analysis.uncertainties?.length > 0) || (analysis.needs_clarification?.length > 0)) && (
+                  <div className="mb-6">
+                    <p className="text-xs font-mono uppercase mb-2 text-muted">Will ask you about</p>
+                    <div className="space-y-2">
+                      {(analysis.uncertainties || []).map((u, i) => (
+                        <div key={`u-${i}`} className="rounded-xl px-4 py-3 border"
+                          style={{ backgroundColor: '#fffbef', borderColor: '#ecd9a8' }}>
+                          <p className="text-sm text-ink">{typeof u === 'string' ? u : (u.question || u.topic)}</p>
+                          {typeof u === 'object' && u.evidence && (
+                            <p className="text-xs mt-1 text-muted italic">Document says: &ldquo;{u.evidence}&rdquo;</p>
+                          )}
+                        </div>
+                      ))}
+                      {(analysis.needs_clarification || []).map((n, i) => (
+                        <div key={`n-${i}`} className="rounded-xl px-4 py-3 border"
+                          style={{ backgroundColor: '#fffbef', borderColor: '#ecd9a8' }}>
+                          <p className="text-sm text-ink">{typeof n === 'string' ? n : (n.question || n.topic)}</p>
+                          {typeof n === 'object' && n.reason && (
+                            <p className="text-xs mt-1 text-muted">{n.reason}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {analysis.terminology?.length > 0 && (
+                  <div className="mb-6">
+                    <p className="text-xs font-mono uppercase mb-2 text-muted">Terminology</p>
+                    <div className="flex flex-wrap gap-2">
+                      {analysis.terminology.map(t => (
+                        <span key={t} className="px-3 py-1 text-sm rounded-full border border-hairline text-ink opacity-80">{t}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {analysis.data_points?.length > 0 && (
+                  <div className="mb-6">
+                    <p className="text-xs font-mono uppercase mb-2 text-muted">Data Points Found</p>
+                    <div className="flex flex-wrap gap-2">
+                      {analysis.data_points.map(d => (
+                        <span key={d} className="px-3 py-1 text-sm rounded-full" style={{ backgroundColor: '#eef4ef', border: '1px solid #cfe2d4', color: '#2f6d4f' }}>{d}</span>
                       ))}
                     </div>
                   </div>
