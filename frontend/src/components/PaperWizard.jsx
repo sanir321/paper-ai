@@ -539,10 +539,83 @@ export default function PaperWizard({ onNewSession }) {
     finally { setResumeAiEditing(false); }
   };
 
-  const handleSelectDoc = (doc) => {
-    if (doc.sessionId && doc.sessionId !== sessionId) {
-      setSessionId(doc.sessionId);
-      goStep(1);
+  const handleSelectDoc = async (doc) => {
+    if (!doc?.sessionId) return;
+    if (doc.sessionId === sessionId) return;
+
+    setLoading(true);
+    setError('');
+    try {
+      const sess = await apiService.getSession(doc.sessionId);
+      setSessionId(sess.session_id);
+      setFile({ name: sess.filename || doc.name, size: doc.size || 0, lastModified: doc.lastModified || Date.now() });
+
+      // Close running event streams
+      evtSourceRef.current?.close();
+      evtSourceResumeRef.current?.close();
+      setGenerating(false);
+      setResumeGenerating(false);
+      setLivePaper('');
+      setLiveResume('');
+      setEditMode(false);
+      setResumeEditMode(false);
+
+      const sessMode = sess.mode || '';
+      setMode(sessMode);
+
+      if (sessMode === 'resume') {
+        if (sess.resume_html || sess.resume_text || sess.resume_data) {
+          const rd = sess.resume_data || {};
+          const name = (rd.name || 'Resume').replace(/\s+/g, '_');
+          setResumeResult({
+            resume_data: rd,
+            html_content: sess.resume_html,
+            resume_text: sess.resume_text,
+            download_html: `/api/download-resume/${sess.session_id}/html`,
+            download_pdf: `/api/download-resume/${sess.session_id}/pdf`,
+            filename_html: `${name}_Resume.html`,
+          });
+          setResumeEditable(sess.resume_text || '');
+          goStep(3);
+        } else if (sess.resume_ready) {
+          setResumeReady(true);
+          setResumeQuestion(null);
+          setResumeMessages([{ role: 'ai', text: 'Document ready for resume generation!' }]);
+          goStep(3);
+        } else {
+          goStep(2);
+        }
+      } else if (sessMode === 'ieee') {
+        setAnalysis(sess.analysis || {});
+        if (sess.html_content || sess.paper_text || sess.paper_json) {
+          const title = (sess.paper_json?.title || sess.analysis?.title || 'Research_Paper').replace(/\s+/g, '_');
+          setResult({
+            paper_json: sess.paper_json,
+            html_content: sess.html_content,
+            paper_text: sess.paper_text,
+            preview_html: `/api/preview/${sess.session_id}/html`,
+            download_html: `/api/download/${sess.session_id}/html`,
+            download_docx: `/api/download/${sess.session_id}/docx`,
+            filename_html: `${title}.html`,
+            filename_docx: `${title}.docx`,
+          });
+          setEditable(sess.paper_text || '');
+          goStep(3);
+        } else if (sess.ready) {
+          setReady(true);
+          setQuestion(null);
+          setMessages([{ role: 'ai', text: 'Document analysis is ready for paper generation!' }]);
+          goStep(3);
+        } else {
+          goStep(2);
+        }
+      } else {
+        goStep(1);
+      }
+    } catch (err) {
+      setError(`Could not restore session: ${err.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -555,8 +628,38 @@ export default function PaperWizard({ onNewSession }) {
   } : null;
 
   const handleReset = () => {
+    evtSourceRef.current?.close();
+    evtSourceResumeRef.current?.close();
     setFile(null);
     setSessionId(null);
+    setAnalysis(null);
+    setQuestion(null);
+    setMessages([]);
+    setReady(false);
+    setGenerating(false);
+    setLivePaper('');
+    setResult(null);
+    setEditMode(false);
+    setEditable(null);
+    setAiEditInput('');
+    setAiEditing(false);
+    setEditError('');
+    setError('');
+
+    // Reset resume state
+    setMode('');
+    setResumeQuestion(null);
+    setResumeMessages([]);
+    setResumeReady(false);
+    setResumeGenerating(false);
+    setLiveResume('');
+    setResumeResult(null);
+    setResumeEditMode(false);
+    setResumeEditable('');
+    setResumeAiEditInput('');
+    setResumeAiEditing(false);
+    setResumeCustomAnswer('');
+
     goStep(0);
   };
 

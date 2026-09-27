@@ -5,11 +5,27 @@ export const BASE = import.meta.env.VITE_API_BASE_URL !== undefined
 // ponytail: one fetch helper instead of repeating the ok-check everywhere
 async function req(url, opts = {}) {
   const res = await fetch(url, opts);
-  if (!res.ok) throw new Error((await res.json()).detail);
+  if (!res.ok) {
+    let errorMsg = `Request failed (${res.status})`;
+    try {
+      const errJson = await res.json();
+      errorMsg = errJson.detail || JSON.stringify(errJson);
+    } catch {
+      try {
+        const text = await res.text();
+        if (text) errorMsg = text;
+      } catch (_) {}
+    }
+    throw new Error(errorMsg);
+  }
   return res.json();
 }
 
 export const apiService = {
+  getSession(sessionId) {
+    return req(`${BASE}/api/session/${sessionId}`);
+  },
+
   uploadFile(file) {
     const form = new FormData();
     form.append('file', file);

@@ -434,8 +434,34 @@ async def upload_file(file: UploadFile = File(...)):
         "paper_text": None,
         "images": images,
     }
+    _touch_session(session_id)
 
     return {"session_id": session_id, "images_count": len(images)}
+
+
+@app.get("/api/session/{session_id}")
+async def get_session_info(session_id: str):
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found or expired")
+    _touch_session(session_id)
+    return {
+        "session_id": session_id,
+        "filename": s.get("filename", ""),
+        "mode": s.get("mode", ""),
+        "ready": s.get("ready", False),
+        "resume_ready": s.get("resume_ready", False),
+        "analysis": s.get("analysis", {}),
+        "resume_analysis": s.get("resume_analysis", {}),
+        "has_paper": bool(s.get("paper_text")),
+        "has_resume": bool(s.get("resume_text")),
+        "paper_json": s.get("paper_json"),
+        "resume_data": s.get("resume_data"),
+        "resume_text": s.get("resume_text"),
+        "paper_text": s.get("paper_text"),
+        "html_content": s.get("html_content"),
+        "resume_html": s.get("resume_html"),
+    }
 
 @app.get("/api/session/{session_id}/image/{filename}")
 async def serve_session_image(session_id: str, filename: str):
@@ -1317,7 +1343,8 @@ def generate_ieee_docx(paper_json: dict, session_dir: str = "") -> bytes:
             p_ref.paragraph_format.line_spacing = 1.0
             p_ref.paragraph_format.left_indent = Inches(0.25)
             p_ref.paragraph_format.first_line_indent = Inches(-0.25)
-            _add_run(p_ref, f'[{i}] {ref}', size=10)
+            ref_text = ref.get("citation", str(ref)) if isinstance(ref, dict) else str(ref)
+            _add_run(p_ref, f'[{i}] {ref_text}', size=10)
 
     # ── Save to bytes ──
     buffer = BytesIO()
@@ -1498,32 +1525,32 @@ def generate_resume_html(resume_data: dict) -> str:
 <style>
   @page {{ size: letter; margin: 0.45in 0.5in; }}
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 9.5pt; color: #2d3748; line-height: 1.45; background: #fff; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 9.5pt; color: #111827; line-height: 1.45; background: #fff; }}
   .resume {{ max-width: 7.5in; margin: 0 auto; padding: 0.4in 0.5in; }}
-  .header {{ text-align: center; padding-bottom: 12px; margin-bottom: 14px; border-bottom: 2px solid #1a5276; }}
-  .name {{ font-size: 22pt; font-weight: 700; color: #1a365d; letter-spacing: 0.5px; margin-bottom: 5px; }}
-  .contact {{ font-size: 8.5pt; color: #4a5568; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; }}
-  .contact a {{ color: #2b6cb0; text-decoration: none; }}
+  .header {{ text-align: center; padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1.5px solid #000000; }}
+  .name {{ font-size: 22pt; font-weight: 700; color: #000000; letter-spacing: 0.5px; margin-bottom: 4px; }}
+  .contact {{ font-size: 8.5pt; color: #374151; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; }}
+  .contact a {{ color: #000000; text-decoration: underline; text-underline-offset: 2px; }}
   .contact a:hover {{ text-decoration: underline; }}
-  .ci-icon {{ font-weight: bold; color: #1a5276; margin-right: 2px; }}
-  .section {{ margin-bottom: 14px; }}
-  .section-title {{ font-size: 10.5pt; font-weight: 700; color: #1a5276; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid #bee3f8; padding-bottom: 3px; margin-bottom: 8px; }}
-  .summary-text {{ font-size: 9.5pt; color: #2d3748; line-height: 1.5; text-align: justify; }}
-  .item {{ margin-bottom: 9px; }}
+  .ci-icon {{ font-weight: bold; color: #000000; margin-right: 2px; }}
+  .section {{ margin-bottom: 13px; }}
+  .section-title {{ font-size: 10.5pt; font-weight: 700; color: #000000; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #000000; padding-bottom: 2px; margin-bottom: 7px; }}
+  .summary-text {{ font-size: 9.5pt; color: #1f2937; line-height: 1.5; text-align: justify; }}
+  .item {{ margin-bottom: 8px; }}
   .item-header {{ display: flex; justify-content: space-between; align-items: baseline; }}
-  .item-title {{ font-weight: 700; font-size: 9.5pt; color: #1a202c; }}
-  .item-date {{ color: #718096; font-size: 8.5pt; font-weight: 500; white-space: nowrap; }}
-  .item-subtitle {{ font-style: italic; color: #4a5568; font-size: 9pt; margin-top: 1px; margin-bottom: 3px; }}
-  .item-tech {{ font-size: 8.5pt; color: #2b6cb0; font-style: italic; }}
-  .item-link a {{ font-size: 8.5pt; color: #2b6cb0; text-decoration: none; }}
-  ul.bullets {{ margin: 3px 0 0 16px; padding: 0; }}
-  ul.bullets li {{ font-size: 9pt; color: #2d3748; margin-bottom: 2.5px; line-height: 1.4; }}
-  .project-desc {{ font-size: 9pt; color: #2d3748; margin-top: 2px; }}
-  .skills-container {{ display: flex; flex-direction: column; gap: 4px; }}
+  .item-title {{ font-weight: 700; font-size: 9.5pt; color: #000000; }}
+  .item-date {{ color: #4b5563; font-size: 8.5pt; font-weight: 500; white-space: nowrap; font-style: italic; }}
+  .item-subtitle {{ font-style: italic; color: #374151; font-size: 9pt; margin-top: 1px; margin-bottom: 2px; }}
+  .item-tech {{ font-size: 8.5pt; color: #374151; font-style: italic; }}
+  .item-link a {{ font-size: 8.5pt; color: #000000; text-decoration: underline; }}
+  ul.bullets {{ margin: 2px 0 0 16px; padding: 0; }}
+  ul.bullets li {{ font-size: 9pt; color: #1f2937; margin-bottom: 2px; line-height: 1.4; }}
+  .project-desc {{ font-size: 9pt; color: #1f2937; margin-top: 2px; }}
+  .skills-container {{ display: flex; flex-direction: column; gap: 3px; }}
   .skill-row {{ font-size: 9pt; line-height: 1.4; }}
-  .skill-cat {{ font-weight: 700; color: #2d3748; }}
-  .skill-val {{ color: #4a5568; }}
-  .skill-tag {{ display: inline-block; background: #ebf8ff; color: #2b6cb0; padding: 2px 8px; border-radius: 4px; font-size: 8.5pt; border: 1px solid #bee3f8; margin: 2px; }}
+  .skill-cat {{ font-weight: 700; color: #000000; }}
+  .skill-val {{ color: #374151; }}
+  .skill-tag {{ display: inline-block; background: #f3f4f6; color: #111827; padding: 2px 8px; border-radius: 4px; font-size: 8.5pt; border: 1px solid #d1d5db; margin: 2px; }}
   @media print {{ body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }} .resume {{ padding: 0; max-width: 100%; }} }}
 </style></head><body>
 <div class="resume">
@@ -1826,31 +1853,31 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
     def section_header(title):
         pdf.ln(2)
         pdf.set_font("Helvetica", "B", 10.5)
-        pdf.set_text_color(26, 82, 118)
+        pdf.set_text_color(0, 0, 0)
         pdf.set_x(ml)
         pdf.cell(content_w, 6, ascii_safe(title.upper()), new_x="LMARGIN", new_y="NEXT")
-        pdf.set_draw_color(190, 227, 248)
-        pdf.set_line_width(0.5)
+        pdf.set_draw_color(0, 0, 0)
+        pdf.set_line_width(0.4)
         pdf.line(ml, pdf.get_y(), ml + content_w, pdf.get_y())
         pdf.ln(2.5)
-        pdf.set_text_color(45, 55, 72)
+        pdf.set_text_color(0, 0, 0)
 
     # ── Header ─────────────────────────────────────────────
     pdf.set_font("Helvetica", "B", 20)
-    pdf.set_text_color(26, 54, 93)
+    pdf.set_text_color(0, 0, 0)
     pdf.set_x(ml)
     pdf.cell(content_w, 9, name, align="C", new_x="LMARGIN", new_y="NEXT")
 
     contact_parts = [p for p in [loc, email, phone, linkedin, github_acc] if p]
     if contact_parts:
         pdf.set_font("Helvetica", "", 8.5)
-        pdf.set_text_color(74, 85, 104)
+        pdf.set_text_color(50, 50, 50)
         pdf.set_x(ml)
         pdf.cell(content_w, 4.5, "  |  ".join(contact_parts), align="C", new_x="LMARGIN", new_y="NEXT")
 
     pdf.ln(2)
-    pdf.set_draw_color(26, 82, 118)
-    pdf.set_line_width(0.7)
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.6)
     pdf.line(ml, pdf.get_y(), ml + content_w, pdf.get_y())
     pdf.ln(3)
 
@@ -1858,7 +1885,7 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
     if summary:
         section_header("Summary")
         pdf.set_font("Helvetica", "", 9.5)
-        pdf.set_text_color(45, 55, 72)
+        pdf.set_text_color(25, 25, 25)
         pdf.set_x(ml)
         pdf.multi_cell(content_w, 4.5, summary, new_x="LMARGIN", new_y="NEXT")
         pdf.ln(1)
@@ -1876,13 +1903,13 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                     continue
 
                 pdf.set_font("Helvetica", "B", 9.5)
-                pdf.set_text_color(26, 32, 44)
+                pdf.set_text_color(0, 0, 0)
                 pdf.set_x(ml)
                 date_w = 40 if year else 0
                 pdf.cell(content_w - date_w, 4.8, degree, new_x="RIGHT", new_y="TOP")
                 if year:
                     pdf.set_font("Helvetica", "I", 8.5)
-                    pdf.set_text_color(113, 128, 150)
+                    pdf.set_text_color(70, 70, 70)
                     pdf.cell(date_w, 4.8, year, align="R", new_x="LMARGIN", new_y="NEXT")
                 else:
                     pdf.ln(4.8)
@@ -1894,7 +1921,7 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                     sub_parts.append(f"GPA: {gpa}")
                 if sub_parts:
                     pdf.set_font("Helvetica", "I", 9)
-                    pdf.set_text_color(74, 85, 104)
+                    pdf.set_text_color(50, 50, 50)
                     pdf.set_x(ml)
                     pdf.cell(content_w, 4.2, " -- ".join(sub_parts), new_x="LMARGIN", new_y="NEXT")
             else:
@@ -1917,13 +1944,13 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                     continue
 
                 pdf.set_font("Helvetica", "B", 9.5)
-                pdf.set_text_color(26, 32, 44)
+                pdf.set_text_color(0, 0, 0)
                 pdf.set_x(ml)
                 date_w = 45 if dates else 0
                 pdf.cell(content_w - date_w, 4.8, role or company, new_x="RIGHT", new_y="TOP")
                 if dates:
                     pdf.set_font("Helvetica", "I", 8.5)
-                    pdf.set_text_color(113, 128, 150)
+                    pdf.set_text_color(70, 70, 70)
                     pdf.cell(date_w, 4.8, dates, align="R", new_x="LMARGIN", new_y="NEXT")
                 else:
                     pdf.ln(4.8)
@@ -1935,7 +1962,7 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                     sub_parts.append(exp_loc)
                 if sub_parts:
                     pdf.set_font("Helvetica", "I", 9)
-                    pdf.set_text_color(74, 85, 104)
+                    pdf.set_text_color(50, 50, 50)
                     pdf.set_x(ml)
                     pdf.cell(content_w, 4.2, " -- ".join(sub_parts), new_x="LMARGIN", new_y="NEXT")
 
@@ -1943,7 +1970,7 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                     b_clean = ascii_safe(re.sub(r'^[-*•\s]+', '', str(b)).strip())
                     if b_clean:
                         pdf.set_font("Helvetica", "", 9)
-                        pdf.set_text_color(45, 55, 72)
+                        pdf.set_text_color(25, 25, 25)
                         pdf.set_x(ml + 3)
                         pdf.multi_cell(content_w - 3, 4.2, f"-  {b_clean}", new_x="LMARGIN", new_y="NEXT")
             else:
@@ -1960,17 +1987,17 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
             if ":" in s_clean:
                 cat, val = s_clean.split(":", 1)
                 pdf.set_font("Helvetica", "B", 9)
-                pdf.set_text_color(26, 32, 44)
+                pdf.set_text_color(0, 0, 0)
                 cat_str = f"{cat.strip()}: "
                 cat_w = pdf.get_string_width(cat_str) + 1
                 pdf.set_x(ml)
                 pdf.cell(cat_w, 4.5, cat_str, new_x="RIGHT", new_y="TOP")
                 pdf.set_font("Helvetica", "", 9)
-                pdf.set_text_color(74, 85, 104)
+                pdf.set_text_color(40, 40, 40)
                 pdf.multi_cell(content_w - cat_w, 4.5, val.strip(), new_x="LMARGIN", new_y="NEXT")
             else:
                 pdf.set_font("Helvetica", "", 9)
-                pdf.set_text_color(45, 55, 72)
+                pdf.set_text_color(25, 25, 25)
                 pdf.set_x(ml)
                 pdf.multi_cell(content_w, 4.5, s_clean, new_x="LMARGIN", new_y="NEXT")
         pdf.ln(1)
@@ -1989,26 +2016,26 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                     continue
 
                 pdf.set_font("Helvetica", "B", 9.5)
-                pdf.set_text_color(26, 32, 44)
+                pdf.set_text_color(0, 0, 0)
                 pdf.set_x(ml)
                 tech_w = pdf.get_string_width(tech) + 2 if tech else 0
                 pdf.cell(content_w - tech_w, 4.8, p_name, new_x="RIGHT", new_y="TOP")
                 if tech:
                     pdf.set_font("Helvetica", "I", 8.5)
-                    pdf.set_text_color(43, 108, 176)
+                    pdf.set_text_color(70, 70, 70)
                     pdf.cell(tech_w, 4.8, tech, align="R", new_x="LMARGIN", new_y="NEXT")
                 else:
                     pdf.ln(4.8)
 
                 if link:
                     pdf.set_font("Helvetica", "", 8)
-                    pdf.set_text_color(43, 108, 176)
+                    pdf.set_text_color(70, 70, 70)
                     pdf.set_x(ml)
                     pdf.cell(content_w, 3.8, link, new_x="LMARGIN", new_y="NEXT")
 
                 if desc:
                     pdf.set_font("Helvetica", "", 9)
-                    pdf.set_text_color(45, 55, 72)
+                    pdf.set_text_color(25, 25, 25)
                     pdf.set_x(ml)
                     pdf.multi_cell(content_w, 4.2, desc, new_x="LMARGIN", new_y="NEXT")
 
@@ -2016,7 +2043,7 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                     b_clean = ascii_safe(re.sub(r'^[-*•\s]+', '', str(b)).strip())
                     if b_clean:
                         pdf.set_font("Helvetica", "", 9)
-                        pdf.set_text_color(45, 55, 72)
+                        pdf.set_text_color(25, 25, 25)
                         pdf.set_x(ml + 3)
                         pdf.multi_cell(content_w - 3, 4.2, f"-  {b_clean}", new_x="LMARGIN", new_y="NEXT")
             else:
@@ -2033,7 +2060,7 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
             c_clean = re.sub(r'^[-*•\s]+', '', c_text).strip()
             if c_clean:
                 pdf.set_font("Helvetica", "", 9)
-                pdf.set_text_color(45, 55, 72)
+                pdf.set_text_color(25, 25, 25)
                 pdf.set_x(ml + 3)
                 pdf.cell(content_w - 3, 4.2, f"-  {c_clean}", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(1)
@@ -2401,6 +2428,7 @@ async def edit_paper_endpoint(session_id: str, data: dict):
     return result
 
 
+@app.get("/api/preview/{session_id}/{fmt}")
 @app.get("/api/preview-paper/{session_id}/{fmt}")
 async def preview_paper(session_id: str, fmt: str):
     s = sessions.get(session_id)
