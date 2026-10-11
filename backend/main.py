@@ -496,6 +496,21 @@ async def ask_paper_question(session_id: str):
     return {"question": q_result.get("question", ""), "options": q_result.get("options", []), 
             "context": q_result.get("context", ""), "type": q_result.get("type", "")}
 
+def _parse_author_names(answer: str) -> list:
+    """Split a byline answer into author names.
+
+    The prompt asks for semicolon-separated names, but users routinely answer
+    a follow-up question with prose. Splitting that on ';' (and ',') turns each
+    clause into a bogus "author". Keep only segments short enough and wordy
+    enough to plausibly be a name, and report an empty list when nothing
+    qualifies so the caller can ask again instead of writing prose onto the
+    byline.
+    """
+    parts = [n.strip() for n in answer.replace(",", ";").split(";") if n.strip()]
+    plausible = [p for p in parts if len(p) <= 60 and 1 <= len(p.split()) <= 5]
+    return plausible
+
+
 @app.post("/api/answer-paper/{session_id}")
 async def submit_paper_answer(session_id: str, data: dict):
     s = sessions.get(session_id)
@@ -513,10 +528,19 @@ async def submit_paper_answer(session_id: str, data: dict):
     qtype = s.get("_last_qtype", "")
 
     if qtype in ("authors", "authors_confirm_no"):
-        names = [n.strip() for n in answer.replace(",", ";").split(";") if n.strip()]
+        names = _parse_author_names(answer)
         if names:
             s["analysis"]["authors"] = names
-        s["answers"]["_authors_ok"] = True
+            s["answers"]["_authors_ok"] = True
+        else:
+            # Answer did not look like a byline -- ask again rather than
+            # writing prose into the author block.
+            return {
+                "question": "That answer doesn't look like author names. Please enter name(s) only, separated by semicolons (e.g. Jane Doe; John Smith).",
+                "options": [],
+                "context": "Author names are needed for the IEEE byline.",
+                "type": "authors_confirm_no"
+            }
     elif qtype == "authors_confirm":
         if answer.lower().startswith("y"):
             s["answers"]["_authors_ok"] = True
