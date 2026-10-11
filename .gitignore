@@ -18,6 +18,8 @@ dist/
 build/
 test_*
 sample_*
+!backend/tests/
+!backend/tests/test_*.py
 *.pdf
 check*.html
 SmartDoc_AI*.html

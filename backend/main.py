@@ -66,8 +66,95 @@ SESSION_TTL_MINUTES = 60
 sessions = {}
 _last_session_access = {}
 
+# Sessions are mirrored to disk as JSON so an unexpected container restart does
+# not destroy the user's uploaded document, interview answers and generated
+# output. The in-memory dict stays the source of truth for reads.
+_SESSION_STORE_DIR = os.environ.get("SESSION_STORE_DIR", "/app/session_store")
+
+
+def _session_snapshot_path(session_id: str):
+    if not session_id or "/" in session_id or ".." in session_id:
+        return None
+    return os.path.join(_SESSION_STORE_DIR, f"{session_id}.json")
+
+
+def _json_safe(value):
+    """Coerce a value to something json can serialise.
+
+    Sessions hold results from docx/fpdf/pdf libraries that can return bytes
+    and other non-serialisable objects.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _persist_session(session_id: str):
+    path = _session_snapshot_path(session_id)
+    if not path:
+        return
+    s = sessions.get(session_id)
+    if not s:
+        return
+    try:
+        os.makedirs(_SESSION_STORE_DIR, exist_ok=True)
+        payload = {
+            "saved_at": time.time(),
+            "session": _json_safe({
+                k: v for k, v in s.items() if k not in ("images",)
+            }),
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _restore_sessions():
+    """Reload sessions saved before a restart. Never fatal."""
+    try:
+        if not os.path.isdir(_SESSION_STORE_DIR):
+            return
+        now = time.time()
+        for fn in os.listdir(_SESSION_STORE_DIR):
+            if not fn.endswith(".json"):
+                continue
+            path = os.path.join(_SESSION_STORE_DIR, fn)
+            try:
+                with open(path) as f:
+                    payload = json.load(f)
+            except Exception:
+                continue
+            saved_at = payload.get("saved_at", 0)
+            if now - saved_at > SESSION_TTL_MINUTES * 60:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                continue
+            sid = fn[:-5]
+            s = payload.get("session")
+            if not isinstance(s, dict) or sid in sessions:
+                continue
+            s.setdefault("images", [])
+            sessions[sid] = s
+            _last_session_access[sid] = saved_at
+    except Exception:
+        pass
+
+
 def _touch_session(sid: str):
     _last_session_access[sid] = time.time()
+    _persist_session(sid)
+
 
 def _session_cleanup():
     while True:
@@ -76,10 +163,17 @@ def _session_cleanup():
         for sid in stale:
             s = sessions.pop(sid, None)
             _last_session_access.pop(sid, None)
+            path = _session_snapshot_path(sid)
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
         time.sleep(300)
 
 @app.on_event("startup")
 async def _start_cleaner():
+    _restore_sessions()
     import threading
     t = threading.Thread(target=_session_cleanup, daemon=True)
     t.start()
@@ -755,6 +849,7 @@ def handle_generate_paper_stream(session_id: str):
             s["paper_text"] = result["paper_text"]
             s["html_content"] = result["html_content"]
             s["paper_json"] = result.get("paper_json")
+            _persist_session(session_id)
             yield f"data: {json.dumps({'type': 'done', 'result': result})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -2166,6 +2261,52 @@ async def set_mode(session_id: str, data: dict):
     }
 
 
+# ─── Resume field validation ───────────────────────────────────────────────
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
+_PHONE_RE = re.compile(r"^\+?[\d\s().-]{6,20}$")
+_NEGATIVE_RE = re.compile(r"^\s*(n|no|none|nope|skip|pass|n/?a|leave|blank|empty)\b", re.I)
+
+
+def _looks_like_email(value: str) -> bool:
+    return bool(_EMAIL_RE.match((value or "").strip()))
+
+
+def _looks_like_phone(value: str) -> bool:
+    v = (value or "").strip()
+    if _NEGATIVE_RE.match(v):
+        return False
+    if not _PHONE_RE.match(v):
+        return False
+    return sum(c.isdigit() for c in v) >= 6
+
+
+def _looks_like_person_name(value: str) -> bool:
+    """A resume name is short. Reject prose answers to the name prompt.
+
+    Periods are allowed because initials ("A. B. Sharma") are common; commas
+    are not, since they signal a clause rather than a name.
+    """
+    v = (value or "").strip()
+    if not v or _NEGATIVE_RE.match(v):
+        return False
+    words = v.split()
+    return 2 <= len(v) <= 60 and len(words) <= 5 and "," not in v
+
+
+def _resume_field_error(qtype: str, value: str) -> str:
+    """Return a retry prompt when a resume answer doesn't fit its field."""
+    v = (value or "").strip()
+    if not v:
+        return "Please enter a value, or type 'skip' to leave it blank."
+    if qtype == "email" and not _looks_like_email(v):
+        return f"\"{v[:60]}\" doesn't look like an email address. Please enter one like name@example.com, or type 'skip'."
+    if qtype == "phone" and not _looks_like_phone(v):
+        return f"\"{v[:60]}\" doesn't look like a phone number. Please enter digits (e.g. +977 9812345678), or type 'skip'."
+    if qtype in ("name", "name_confirm") and not _looks_like_person_name(v):
+        return "That answer is too long to be a name. Please enter just your full name, or type 'skip'."
+    return ""
+
+
 @app.post("/api/ask-resume/{session_id}")
 async def ask_resume_question(session_id: str):
     s = sessions.get(session_id)
@@ -2205,6 +2346,29 @@ async def submit_resume_answer(session_id: str, data: dict):
 
     if "resume_analysis" not in s or not isinstance(s.get("resume_analysis"), dict):
         s["resume_analysis"] = {}
+
+    # Reject answers that don't fit their field before they can reach the
+    # rendered resume, and let the user explicitly skip a field.
+    if qtype in ("name", "name_confirm", "email", "email_confirm", "phone"):
+        skipping = bool(_NEGATIVE_RE.match(answer.strip()))
+        if skipping:
+            if qtype in ("name", "name_confirm"):
+                s["resume_analysis"]["name"] = ""
+                s["resume_answers"]["_name_ok"] = True
+            elif qtype in ("email", "email_confirm"):
+                s["resume_analysis"]["email"] = ""
+                s["resume_answers"]["_email_ok"] = True
+            else:
+                s["resume_answers"]["_phone_ok"] = True
+        else:
+            field_error = _resume_field_error(qtype, answer)
+            if field_error:
+                return {
+                    "question": field_error,
+                    "options": [],
+                    "context": "Checking the value you entered.",
+                    "type": qtype,
+                }
 
     # Handle structured fields
     if qtype in ("name", "name_confirm"):
@@ -2284,6 +2448,7 @@ def generate_resume_stream_endpoint(session_id: str):
                 "download_pdf": f"/api/download-resume/{session_id}/pdf",
                 "filename_html": f"{resume_data.get('name', 'Resume').replace(' ', '_')}_Resume.html",
             }
+            _persist_session(session_id)
             yield f"data: {json.dumps({'type': 'done', 'result': result})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
