@@ -2474,10 +2474,28 @@ _dist_candidates = [
 
 _frontend_dist = next((d for d in _dist_candidates if os.path.isdir(d)), None)
 
+# Vite emits content-hashed filenames under /assets, so those are safe to cache
+# forever. The SPA shell is not, and must always be revalidated.
+_ASSET_CACHE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+_INDEX_CACHE_HEADERS = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+class _ImmutableStaticFiles(StaticFiles):
+    """Serve Vite's content-hashed bundles with a long-lived cache header.
+
+    Older Starlette releases have no `headers` argument on StaticFiles, so the
+    header is attached by overriding the per-file response instead.
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers.update(_ASSET_CACHE_HEADERS)
+        return resp
+
+
 if _frontend_dist:
     _assets_dir = os.path.join(_frontend_dist, "assets")
     if os.path.isdir(_assets_dir):
-        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+        app.mount("/assets", _ImmutableStaticFiles(directory=_assets_dir), name="assets")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
@@ -2485,10 +2503,14 @@ if _frontend_dist:
             raise HTTPException(404, "API route not found")
         target = os.path.join(_frontend_dist, full_path)
         if os.path.isfile(target):
-            return FileResponse(target)
+            return FileResponse(target, headers=_ASSET_CACHE_HEADERS)
         index_file = os.path.join(_frontend_dist, "index.html")
         if os.path.isfile(index_file):
-            return FileResponse(index_file)
+            # The shell references content-hashed bundles. It must never be
+            # served from a stale cache, otherwise a returning visitor requests
+            # a JS bundle that no longer exists after a deploy and gets a
+            # blank page until they hard-refresh.
+            return FileResponse(index_file, headers=_INDEX_CACHE_HEADERS)
         raise HTTPException(404, "Frontend file not found")
 
 
