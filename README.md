@@ -4,8 +4,9 @@ Upload any document — AI extracts everything, interviews you on gaps, then gen
 
 ## Live Demo
 
-- **Frontend:** [frontend-production-d77c4.up.railway.app](https://frontend-production-d77c4.up.railway.app)
-- **Backend:** [backend-production-a605.up.railway.app](https://backend-production-a605.up.railway.app)
+**[paper-ai-k2wg.onrender.com](https://paper-ai-k2wg.onrender.com)**
+
+Single service — the Docker image builds the React frontend and serves it from FastAPI, so UI and API share one origin. Health check: `/api/health`.
 
 ## Features
 
@@ -25,7 +26,7 @@ Upload any document — AI extracts everything, interviews you on gaps, then gen
 | Frontend | React 18, Vite, Tailwind CSS, React Router v7 |
 | Backend | FastAPI, Uvicorn, PyPDF2, python-docx, fpdf2, PyMuPDF |
 | AI Model | Nemotron-3-Ultra-Free via OpenCode Zen API |
-| Hosting | Railway (frontend + backend as separate services) |
+| Hosting | Render (single Docker service, frontend + API on one origin) |
 
 ## Project Structure
 
@@ -90,21 +91,19 @@ Create a `.env` file in `backend/` or set them in your shell. For the frontend, 
 VITE_API_BASE_URL=http://localhost:8080
 ```
 
-## Deploy on Railway
+## Deploy on Render
 
-This project runs as **two Railway services** from the same GitHub repo (`sanir321/doc-oct`):
+Deployed as **one Render web service** (Docker runtime) from the GitHub repo `sanir321/paper-ai`:
 
-### Backend Service
-- **Root directory:** `backend`
-- **Build:** `pip install -r requirements.txt`
-- **Start:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
-- **Env:** Add `EXPERIENTIAL_API_KEY`
+- **Runtime:** `docker`
+- **Dockerfile:** `./Dockerfile` — multi-stage: builds `frontend/` with Vite, then serves the output from FastAPI
+- **Health check path:** `/api/health`
+- **Region:** `oregon` · **Plan:** `free`
+- **Env:** `EXPERIENTIAL_API_KEY`, `EXPERIENTIAL_BASE_URL`, `LLM_MODEL`
 
-### Frontend Service
-- **Root directory:** `frontend`
-- **Build:** `npm install && npm run build`
-- **Start:** `npx serve dist -s -l $PORT`
-- **Env:** Add `VITE_API_BASE_URL=https://your-backend.up.railway.app`
+Because the frontend is served from the same origin as the API, `VITE_API_BASE_URL` is not required — `frontend/src/config/api.js` falls back to same-origin requests in production builds.
+
+> Free-tier note: the service spins down after ~15 minutes of inactivity, so the first request after a pause takes 30-60s to wake up.
 
 ## API Endpoints
 
