@@ -178,7 +178,15 @@ export default function PaperWizard({ onNewSession }) {
   const [aiEditing, setAiEditing] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
   const [editError, setEditError] = useState('');
-  const [uploadHistory, setUploadHistory] = useState([]);
+  const [uploadHistory, setUploadHistory] = useState(() => {
+    try {
+      const raw = localStorage.getItem('uploadHistory');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const [selectedFormat, setSelectedFormat] = useState('procomm');
 
   // Resume mode state
@@ -198,6 +206,15 @@ export default function PaperWizard({ onNewSession }) {
   const [resumeCustomAnswer, setResumeCustomAnswer] = useState('');
 
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, aiTyping]);
+  // Keep upload history in localStorage so a reload can restore the session
+  // list. Without this the sidebar resets to EMPTY and the user loses their
+  // documents, answers and generated output.
+  useEffect(() => {
+    try {
+      localStorage.setItem('uploadHistory', JSON.stringify(uploadHistory));
+    } catch {}
+  }, [uploadHistory]);
+
   useEffect(() => {
     return () => {
       evtSourceRef.current?.close();
@@ -267,7 +284,15 @@ export default function PaperWizard({ onNewSession }) {
         setQuestion(data); setAiTyping(false);
         setMessages(prev => [...prev, { role: 'ai', text: data.question || '' }]);
       }
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      // Restore the question and stop the typing indicator, otherwise the
+      // interview deadlocks: question is already cleared and aiTyping stays
+      // true, leaving no input and a permanent "Waiting for AI response...".
+      setAiTyping(false);
+      setQuestion(qObj);
+      setMessages(prev => prev.slice(0, -1));
+      setError(e.message);
+    }
     finally { setLoading(false); }
   };
 
@@ -290,7 +315,14 @@ export default function PaperWizard({ onNewSession }) {
         setQuestion(data); setAiTyping(false);
         setMessages(prev => [...prev, { role: 'ai', text: data.question || '' }]);
       }
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      setAiTyping(false);
+      setFollowUp(followUp);
+      setQuestion(followUp);
+      setShowFollowUp(true);
+      setMessages(prev => prev.slice(0, -1));
+      setError(e.message);
+    }
     finally { setLoading(false); }
   };
 
@@ -469,7 +501,12 @@ export default function PaperWizard({ onNewSession }) {
         const qText = typeof data.question === 'string' ? data.question : (data.question?.question || '');
         setResumeMessages(prev => [...prev, { role: 'ai', text: qText }]);
       }
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      setAiTyping(false);
+      setResumeQuestion(qObj);
+      setResumeMessages(prev => prev.slice(0, -1));
+      setError(e.message);
+    }
     finally { setLoading(false); }
   };
 
