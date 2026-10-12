@@ -1,4 +1,4 @@
-# DocOct — AI Research Paper Generator
+# PaperAI — AI Research Paper Generator
 
 Upload any document — AI extracts everything, interviews you on gaps, then generates either an IEEE-formatted research paper or a professional resume. Two modes, one upload.
 

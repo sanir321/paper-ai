@@ -60,8 +60,8 @@ function drawCard(slide, pres, x, y, w, h, fillColor = "FFFFFF") {
 async function main() {
   const pres = new pptxgen();
   pres.layout = "LAYOUT_16x9";
-  pres.author = "DocOct Team";
-  pres.title = "DocOct - AI Research Paper Generator";
+  pres.author = "PaperAI Team";
+  pres.title = "PaperAI - AI Research Paper Generator";
 
   // Pre-render all icons
   const icons = {};
@@ -114,11 +114,11 @@ async function main() {
     fill: { color: C.navy, transparency: 60 },
   });
 
-  // DocOct icon
+  // PaperAI icon
   s1.addImage({ data: icons.cogs, x: 0.8, y: 1.2, w: 0.7, h: 0.7 });
 
   // Title
-  s1.addText("DocOct", {
+  s1.addText("PaperAI", {
     x: 0.8, y: 1.9, w: 8, h: 1.2,
     fontSize: 52, fontFace: "Georgia", bold: true,
     color: C.white, margin: 0,
@@ -582,7 +582,7 @@ async function main() {
     color: C.white, align: "center", margin: 0,
   });
 
-  s8.addText("Join researchers and professionals already using DocOct", {
+  s8.addText("Join researchers and professionals already using PaperAI", {
     x: 1.5, y: 1.8, w: 7, h: 0.5,
     fontSize: 16, fontFace: "Calibri",
     color: C.iceBlue, align: "center", margin: 0,
@@ -594,7 +594,7 @@ async function main() {
     fill: { color: C.accent },
     shadow: mkShadow(),
   });
-  s8.addText("Launch DocOct  →", {
+  s8.addText("Launch PaperAI  →", {
     x: 3.2, y: 2.6, w: 3.6, h: 0.65,
     fontSize: 18, fontFace: "Calibri", bold: true,
     color: C.white, align: "center", valign: "middle",

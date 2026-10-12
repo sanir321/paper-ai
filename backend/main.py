@@ -493,7 +493,7 @@ def extract_docx_images(file_path: str, session_dir: str) -> list:
 
 @app.get("/api/health")
 async def health_check():
-    return {"message": "DocOct AI Generator", "status": "running"}
+    return {"message": "PaperAI AI Generator", "status": "running"}
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
