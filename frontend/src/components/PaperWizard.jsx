@@ -1302,10 +1302,10 @@ export default function PaperWizard({ onNewSession }) {
                     </svg>
                     Download PDF
                   </a>
-                  <a href={apiService.getDownloadUrl(sessionId, "html")}
+                  <a href={apiService.getDownloadUrl(sessionId, "docx")}
                     className="rounded-full text-sm font-medium px-4 py-1.5 border transition-all active:scale-[0.95] border-surface-dark-elevated text-muted hover:border-on-dark-soft hover:text-white"
-                    download={result.filename_html}>
-                    Download HTML
+                    download={result.filename_docx || result.filename_html.replace('.html', '.docx')}>
+                    Download DOCX
                   </a>
                 </div>
               </div>
