@@ -580,6 +580,18 @@ def _dedupe_drafts(text: str) -> str:
     return text
 
 
+def _clean_meta_reasoning(text: str) -> str:
+    if not text:
+        return text
+    import re as _re
+    # Strip prompt leakage like 'Faithful rewrite of the source abstract...'
+    text = _re.sub(r'^(?:Abstract[—–-]\s*)?Faithful rewrite of the source.*?(?:\n|$)', '', text, flags=_re.IGNORECASE)
+    # Strip explicit meta thinking phrases like "Hmm, ...", "I should not fabricate...", etc.
+    text = _re.sub(r'\s*\([^)]*(?:Hmm|fabricat|obvious truncation|excerpt ends)[^)]*\)', '', text, flags=_re.IGNORECASE)
+    text = _re.sub(r'\b(?:Hmm[,\s]|I should not fabricate|I can complete|Maybe a brief mention|That\'s grounded in the TOC[.]?).*?(?=\n|\.\s|\Z)', '', text, flags=_re.IGNORECASE)
+    return text.strip()
+
+
 def _flow_like_paper(tokens):
     """Buffer the entire stream and emit only the final deliverable. This keeps
     chain-of-thought out of the preview: nothing is yielded until the response
@@ -596,6 +608,7 @@ def _flow_like_paper(tokens):
     cleaned = _dedupe_drafts(start)
     if cleaned.strip():
         start = cleaned
+    start = _clean_meta_reasoning(start)
     for i in range(0, len(start), 1200):
         yield start[i:i + 1200]
 
@@ -713,16 +726,10 @@ Then, on the following line, the paper itself. Nothing else before that marker l
                                 if content:
                                     saw_content = True
                                     yield content
-                                elif reasoning:
-                                    reasoning_fallback.append(reasoning)
                             except (json.JSONDecodeError, IndexError, KeyError):
                                 continue
             except Exception:
                 pass
-            if not saw_content and reasoning_fallback:
-                for token in "".join(reasoning_fallback).split("\n"):
-                    if token.strip():
-                        yield token + "\n"
 
         streamed_any = False
         for token in _flow_like_paper(_raw_paper_stream()):
