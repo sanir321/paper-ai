@@ -69,7 +69,10 @@ _last_session_access = {}
 # Sessions are mirrored to disk as JSON so an unexpected container restart does
 # not destroy the user's uploaded document, interview answers and generated
 # output. The in-memory dict stays the source of truth for reads.
-_SESSION_STORE_DIR = os.environ.get("SESSION_STORE_DIR", "/app/session_store")
+_SESSION_STORE_DIR = os.environ.get(
+    "SESSION_STORE_DIR",
+    "/app/session_store" if os.path.exists("/app") and os.access("/app", os.W_OK) else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "session_store"))
+)
 
 
 def _session_snapshot_path(session_id: str):
@@ -179,25 +182,37 @@ async def _start_cleaner():
     t.start()
 
 def _render_body(content, session_id=""):
-    """Turn raw section text into HTML: paragraphs, markdown tables, captions, images."""
+    """Turn raw section text into HTML: paragraphs, markdown tables, captions, images, lists, formatting."""
     def esc(t):
         return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def format_inline(text):
+        t = esc(text)
+        t = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', t)
+        t = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', t)
+        t = re.sub(r'\*(.+?)\*', r'<em>\1</em>', t)
+        t = re.sub(r'`(.+?)`', r'<code>\1</code>', t)
+        return t
+
     def is_sep(line):
         s = line.strip().strip("|")
         return bool(s) and set(s) <= set("-: |") and "-" in s
+
     def is_caption(s):
         return bool(re.match(r'^(figure|table)\s*\d*\.?\s', s, re.I))
+
     def md_table(rows):
         def cells(r):
             return [c.strip() for c in r.strip().strip("|").split("|")]
         header = cells(rows[0])
         body = [cells(r) for r in rows[2:] if "|" in r]
-        th = "".join(f'<th class="tablehead">{esc(c)}</th>' for c in header)
+        th = "".join(f'<th class="tablehead">{format_inline(c)}</th>' for c in header)
         trs = "".join(
-            "<tr>" + "".join(f'<td class="tabletext">{esc(c)}</td>' for c in r) + "</tr>"
+            "<tr>" + "".join(f'<td class="tabletext">{format_inline(c)}</td>' for c in r) + "</tr>"
             for r in body
         )
         return f'<table class="ieee-table"><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table>'
+
     img_re = re.compile(r'!\[(.*?)\]\(([^)]+)\)')
 
     lines = [l.rstrip() for l in content.split("\n")]
@@ -225,19 +240,54 @@ def _render_body(content, session_id=""):
             out.append(md_table(rows))
             continue
         if is_caption(stripped):
-            out.append(f'<div class="caption">{esc(stripped)}</div>')
+            out.append(f'<div class="caption">{format_inline(stripped)}</div>')
             i += 1
             continue
+
+        # Bullet list
+        if re.match(r'^[-*•]\s+', stripped):
+            items = []
+            while i < n and re.match(r'^\s*[-*•]\s+', lines[i]):
+                it_text = re.sub(r'^\s*[-*•]\s+', '', lines[i]).strip()
+                items.append(f'<li>{format_inline(it_text)}</li>')
+                i += 1
+            out.append(f'<ul>{"".join(items)}</ul>')
+            continue
+
+        # Numbered list
+        if re.match(r'^\d+[\.\)]\s+', stripped):
+            items = []
+            while i < n and re.match(r'^\s*\d+[\.\)]\s+', lines[i]):
+                it_text = re.sub(r'^\s*\d+[\.\)]\s+', '', lines[i]).strip()
+                items.append(f'<li>{format_inline(it_text)}</li>')
+                i += 1
+            out.append(f'<ol>{"".join(items)}</ol>')
+            continue
+
         para = [stripped]
         i += 1
         while i < n and lines[i].strip() and "|" not in lines[i] and not is_sep(lines[i]) and not is_caption(lines[i].strip()):
-            img_m2 = img_re.match(lines[i].strip())
-            if img_m2:
+            next_s = lines[i].strip()
+            if img_re.match(next_s) or re.match(r'^[-*•]\s+', next_s) or re.match(r'^\d+[\.\)]\s+', next_s):
                 break
-            para.append(lines[i].strip())
+            para.append(next_s)
             i += 1
-        out.append(f'<p>{esc(" ".join(para))}</p>')
+        out.append(f'<p>{format_inline(" ".join(para))}</p>')
     return "".join(out)
+
+
+def _is_subsection_heading(title: str, level: int = 2) -> bool:
+    """Determine if a heading is an IEEE subsection (e.g. A. Model or 3.1 Setup)."""
+    if not title:
+        return False
+    if level >= 3:
+        return True
+    if re.match(r'^[IVXLCDM]+\.\s*', title.strip()):
+        return False
+    if re.match(r'^(?:[A-HJ-Z]\.|\d+\.\d+|[IVXLCDM]+-[A-Z]\.)\s*', title.strip()):
+        return True
+    return False
+
 
 def generate_ieee_html(title, authors, abstract, sections, keywords, domain, references=None, session_id=""):
     # Build author HTML with per-affiliation superscript markers
@@ -262,10 +312,20 @@ def generate_ieee_html(title, authors, abstract, sections, keywords, domain, ref
             )
         authors_html = "".join(author_parts)
 
-    sections_html = "".join(
-        f'<div class="section"><h2>{s["title"]}</h2>{_render_body(s["content"], session_id)}</div>'
-        for s in sections
-    )
+    sections_html_parts = []
+    for s in sections:
+        lvl = s.get("level", 2)
+        stitle = s.get("title", "")
+        scontent = _render_body(s.get("content", ""), session_id)
+        if _is_subsection_heading(stitle, lvl):
+            sections_html_parts.append(
+                f'<div class="subsection"><h3>{stitle}</h3>{scontent}</div>'
+            )
+        else:
+            sections_html_parts.append(
+                f'<div class="section"><h2>{stitle}</h2>{scontent}</div>'
+            )
+    sections_html = "".join(sections_html_parts)
     keywords_str = ", ".join(keywords)
 
     # Build references HTML
@@ -300,8 +360,12 @@ def generate_ieee_html(title, authors, abstract, sections, keywords, domain, ref
   .content::after {{ content: ""; display: table; clear: both; }}
   .section {{ margin-bottom: 0; break-inside: avoid-column; }}
   .section h2 {{ font-size: 10pt; font-variant: small-caps; font-weight: bold; text-align: center; margin: 12pt 0 6pt 0; letter-spacing: 0.5pt; }}
-  .section h3 {{ font-size: 10pt; font-style: italic; font-weight: normal; text-align: left; margin: 9pt 0 3pt 0; }}
-  .section p {{ text-align: justify; text-indent: 0.17in; margin-bottom: 0; line-height: 1.15; }}
+  .subsection {{ margin-bottom: 0; break-inside: avoid-column; }}
+  .subsection h3, .section h3 {{ font-size: 10pt; font-style: italic; font-weight: normal; text-align: left; margin: 9pt 0 3pt 0; }}
+  .section p, .subsection p {{ text-align: justify; text-indent: 0.17in; margin-bottom: 0; line-height: 1.15; }}
+  .section ul, .section ol, .subsection ul, .subsection ol {{ margin: 4pt 0 4pt 0.25in; font-size: 10pt; line-height: 1.15; }}
+  .section li, .subsection li {{ margin-bottom: 2pt; text-align: justify; }}
+  code {{ font-family: "Courier New", Courier, monospace; font-size: 9pt; background: #f4f4f4; padding: 1px 3px; border-radius: 2px; }}
   .figure {{ text-align: center; margin: 10pt 0; break-inside: avoid; }}
   .figure img {{ max-width: 100%; height: auto; }}
   .figcaption {{ font-size: 9pt; font-style: italic; text-align: center; margin-top: 4pt; }}
@@ -697,29 +761,44 @@ async def submit_paper_answer(session_id: str, data: dict):
 def strip_reasoning(text):
     return find_paper_start(text)
 
-def _heading_text(line):
+def _heading_info(line):
+    """Detect heading text and level (1 for title, 2 for section, 3 for subsection, 4 for sub-sub)."""
     stripped = line.strip()
     if not stripped or stripped.startswith("```") or stripped.startswith("==="):
-        return None
+        return None, None
 
-    m = re.match(r'^(#{1,3})(\s*)(.*)', stripped)
-    if m and (m.group(2) or not m.group(3) or len(m.group(1)) >= 2):
-        return m.group(3).strip() or None
+    m = re.match(r'^(#{1,4})\s+(.*)', stripped)
+    if m:
+        lvl = len(m.group(1))
+        t = m.group(2).strip()
+        if t:
+            return t, lvl
 
+    bold_m = re.match(r'^\*\*(?:([I|V|X]+\.|\d+\.|[A-Z]\.)\s*)?([A-Za-z0-9\s,\-\(\)\/\.]{2,60})\*\*:?$', stripped)
+    if bold_m:
+        t = stripped.strip("* :").strip()
+        lvl = 3 if re.match(r'^[A-Z]\.', t) else 2
+        return t, lvl
+
+    clean = re.sub(r'^#+\s*', '', stripped).strip()
     for prefix in ["Abstract","Introduction","Literature","Related Work","Methodology",
-                   "System Design","Implementation","Experimental","Results","Discussion",
+                   "System Design","Implementation","Experimental","Experiments","Results","Discussion",
                    "Conclusion","Future Work","References"]:
-        clean = re.sub(r'^#+\s*', '', stripped)
-        if clean.lower().startswith(prefix.lower()) and (clean.endswith(":") or len(clean) < len(prefix) + 5):
-            return prefix
+        if clean.lower().startswith(prefix.lower()) and (clean.endswith(":") or len(clean) <= len(prefix) + 8):
+            return clean.rstrip(":").strip(), 2
 
-    return None
+    return None, None
+
+def _heading_text(line):
+    t, _ = _heading_info(line)
+    return t
 
 def parse_paper_text(paper_text, analysis, session_id):
     paper_text = strip_reasoning(paper_text)
     sections = []
     abstract = ""
     current_title = None
+    current_level = 2
     current_content = []
 
     lines = paper_text.split("\n")
@@ -738,20 +817,21 @@ def parse_paper_text(paper_text, analysis, session_id):
         stripped = line.strip()
         if not stripped or stripped.startswith("```") or stripped.startswith("==="):
             continue
-        heading = _heading_text(line)
-        if heading:
+        heading, level = _heading_info(line)
+        if heading and level and level >= 2:
             content = "\n".join(current_content).strip()
             if current_title:
-                sections.append({"title": current_title, "content": content})
+                sections.append({"title": current_title, "content": content, "level": current_level})
             else:
                 abstract = content
             current_title = heading
+            current_level = level
             current_content = []
         else:
             current_content.append(line)
 
     if current_title:
-        sections.append({"title": current_title, "content": "\n".join(current_content).strip()})
+        sections.append({"title": current_title, "content": "\n".join(current_content).strip(), "level": current_level})
     else:
         abstract = "\n".join(current_content).strip()
 
@@ -769,29 +849,39 @@ def parse_paper_text(paper_text, analysis, session_id):
         intro = other_sections[0]["content"]
         abstract_section = intro[:500]
 
-    authors = analysis.get("authors") or ["Author A", "Author B"]
-    affiliation = analysis.get("affiliation") or analysis.get("domain") or "Engineering"
+    authors = analysis.get("authors") or []
+    affiliation = analysis.get("affiliation") or ""
     contact_email = analysis.get("contact_email", "")
     authors_data = []
     for i, author in enumerate(authors):
-        authors_data.append({"name": author, "affiliation": affiliation, "email": contact_email})
+        if author and str(author).strip():
+            authors_data.append({"name": str(author).strip(), "affiliation": affiliation, "email": contact_email})
 
     refs = []
     for sec in other_sections[:]:
         if sec["title"].lower().startswith("reference"):
             raw = sec["content"]
-            parts = re.split(r'\n\s*(?=\[\d+\])', raw.strip())
-            for p in parts:
-                p = p.strip()
-                if p and re.match(r'\[\d+\]', p):
-                    refs.append({"citation": re.sub(r'^\[\d+\]\s*', '', p)})
+            lines_in_ref = raw.strip().split("\n")
+            cur_ref = []
+            for rline in lines_in_ref:
+                rstripped = rline.strip()
+                if not rstripped:
+                    continue
+                is_start = bool(re.match(r'^(?:\[\d+\]|\d+[\.\)]|[-*•])\s+', rstripped))
+                if is_start and cur_ref:
+                    clean_c = " ".join(cur_ref).strip()
+                    clean_c = re.sub(r'^(?:\[\d+\]|\d+[\.\)]|[-*•])\s*', '', clean_c).strip()
+                    if clean_c:
+                        refs.append({"citation": clean_c})
+                    cur_ref = [rstripped]
+                else:
+                    cur_ref.append(rstripped)
+            if cur_ref:
+                clean_c = " ".join(cur_ref).strip()
+                clean_c = re.sub(r'^(?:\[\d+\]|\d+[\.\)]|[-*•])\s*', '', clean_c).strip()
+                if clean_c:
+                    refs.append({"citation": clean_c})
             other_sections.remove(sec)
-    if not refs:
-        refs = [
-            {"citation": f"J. Smith, ``Advances in {analysis.get('domain', 'Technology')},'' IEEE Trans., vol. 45, no. 3, pp. 123-135, 2023."},
-            {"citation": f"B. Johnson, ``Modern {analysis.get('domain', 'Technology')} Systems,'' IEEE Conf. Proc., pp. 456-467, 2022."},
-            {"citation": f"C. Williams, ``{analysis.get('domain', 'Technology')} Innovation,'' IEEE J., vol. 12, no. 4, pp. 789-801, 2023."},
-        ]
 
     html_content = generate_ieee_html(
         title=title,
@@ -842,8 +932,7 @@ def handle_generate_paper_stream(session_id: str):
                 images_info = "\nExtracted images from document (you can reference them with ![caption](filename) markdown):\n" + "\n".join(img_desc)
             for token in generate_paper_stream(s["file_text"], s["answers"], s["analysis"], images_info):
                 paper_text += token
-                safe = token.replace("\n", "\\n").replace("\r", "\\r")
-                yield f"data: {json.dumps({'type': 'token', 'content': safe})}\n\n"
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
 
             result = parse_paper_text(paper_text, s["analysis"], session_id)
             s["paper_text"] = result["paper_text"]
@@ -880,12 +969,24 @@ def generate_pdf_from_html(html_content: str, paper_format: Optional[PaperFormat
         if name:
             authors.append((name, affil, email))
 
-    sections_raw = re.findall(r'<h2>(.*?)</h2>(.*?)(?=<h2>|<div class="references"|$)', html_content, re.DOTALL)
+    sections_raw = re.findall(r'<(h2|h3)>(.*?)</\1>(.*?)(?=<h[23]>|<div class="references"|$)', html_content, re.DOTALL)
     sections = []
-    for t, body in sections_raw:
+    for tag, t, body in sections_raw:
         t_clean = re.sub(r'<[^>]+>', '', t).strip()
-        ps = re.findall(r'<p>(.*?)</p>', body, re.DOTALL)
-        content = '\n\n'.join(re.sub(r'<[^>]+>', '', p).strip().replace('<br>', '\n') for p in ps if p.strip())
+        is_sub = (tag == "h3") or _is_subsection_heading(t_clean)
+        items = re.findall(r'<(p|li)>(.*?)</\1>', body, re.DOTALL)
+        content_parts = []
+        for tag_item, text in items:
+            clean_t = re.sub(r'<[^>]+>', '', text).strip().replace('<br>', '\n')
+            if clean_t:
+                if tag_item == 'li':
+                    content_parts.append(f"- {clean_t}")
+                else:
+                    content_parts.append(clean_t)
+        content = '\n\n'.join(content_parts)
+        if not content and not items:
+            ps = re.findall(r'<p>(.*?)</p>', body, re.DOTALL)
+            content = '\n\n'.join(re.sub(r'<[^>]+>', '', p).strip().replace('<br>', '\n') for p in ps if p.strip())
         # Restore image references from figure divs back into content
         figures = re.findall(r'<div class="figure">.*?<img src="[^"]*/([^"/]+)"[^>]*>.*?<div class="figcaption">(.*?)</div>', body, re.DOTALL)
         for fname, alt in figures:
@@ -901,30 +1002,43 @@ def generate_pdf_from_html(html_content: str, paper_format: Optional[PaperFormat
             if heads or rows:
                 tables.append((heads, rows))
         if t_clean and (content or tables):
-            sections.append((t_clean, content, tables))
+            sections.append((t_clean, content, tables, is_sub))
+
+    ref_block = re.search(r'<div class="references">(.*?)</div>', html_content, re.DOTALL)
+    pdf_refs = []
+    if ref_block:
+        ref_ps = re.findall(r'<p>(.*?)</p>', ref_block.group(1), re.DOTALL)
+        for rp in ref_ps:
+            clean_rp = re.sub(r'<[^>]+>', '', rp).strip()
+            if clean_rp:
+                pdf_refs.append(clean_rp)
 
     def ascii_safe(t):
+        if not t:
+            return ""
         import unicodedata
-        t = t.replace('\u2014', '--').replace('\u2013', '-')
-        t = t.replace('\u2018', "'").replace('\u2019', "'")
-        t = t.replace('\u201c', '"').replace('\u201d', '"')
-        t = t.replace('\u00b2', '^2').replace('\u00b3', '^3')
-        t = t.replace('\u00b0', ' deg ')
-        t = t.replace('\u00b1', '+/-')
-        t = t.replace('\u00d7', 'x').replace('\u00f7', '/')
-        t = t.replace('\u03b1', 'alpha').replace('\u03b2', 'beta')
-        t = t.replace('\u03b3', 'gamma').replace('\u03b4', 'delta')
-        t = t.replace('\u03b8', 'theta').replace('\u03bb', 'lambda')
-        t = t.replace('\u03bc', 'mu').replace('\u03c0', 'pi')
-        t = t.replace('\u03c3', 'sigma').replace('\u03c9', 'omega')
-        t = t.replace('\u0394', 'Delta').replace('\u03a3', 'Sigma')
-        t = t.replace('\u2202', 'd').replace('\u2207', 'nabla')
-        t = t.replace('\u2211', 'sum').replace('\u221e', 'inf')
-        t = t.replace('\u2264', '<=').replace('\u2265', '>=')
-        t = t.replace('\u2260', '!=')
+        replacements = {
+            '\u2014': '--', '\u2013': '-', '\u2015': '--', '\u2012': '-', '\u2010': '-', '\u2212': '-',
+            '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'",
+            '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u201f': '"', '\u00ab': '"', '\u00bb': '"',
+            '\u2022': '* ', '\u2023': '- ', '\u25cf': '* ', '\u25cb': 'o ', '\u25aa': '- ', '\u25ab': '- ',
+            '\u00a0': ' ', '\u200b': '', '\u2003': ' ', '\u2026': '...',
+            '\u00b2': '^2', '\u00b3': '^3', '\u00b0': ' deg ', '\u00b1': '+/-',
+            '\u00d7': 'x', '\u00f7': '/', '\u00b7': '.', '\u2217': '*',
+            '\u03b1': 'alpha', '\u03b2': 'beta', '\u03b3': 'gamma', '\u03b4': 'delta',
+            '\u03b8': 'theta', '\u03bb': 'lambda', '\u03bc': 'mu', '\u03c0': 'pi',
+            '\u03c3': 'sigma', '\u03c9': 'omega', '\u0394': 'Delta', '\u03a3': 'Sigma',
+            '\u2202': 'd', '\u2207': 'nabla', '\u2211': 'sum', '\u221e': 'inf',
+            '\u2264': '<=', '\u2265': '>=', '\u2260': '!=', '\u2248': '~=', '\u2261': '==',
+            '\u2192': '->', '\u2190': '<-', '\u21d2': '=>', '\u21d4': '<=>', '\u221a': 'sqrt',
+            '\u2208': ' in ', '\u2209': ' not in ',
+            '\u2122': '(TM)', '\u00a9': '(C)', '\u00ae': '(R)'
+        }
+        for k, v in replacements.items():
+            t = t.replace(k, v)
         t = unicodedata.normalize('NFKD', t)
-        return t.encode('ascii', 'replace').decode('ascii')
-    sections = [(ascii_safe(t), ascii_safe(c), tables) for t, c, tables in sections]
+        return t.encode('ascii', 'ignore').decode('ascii')
+    sections = [(ascii_safe(t), ascii_safe(c), tables, sub) for t, c, tables, sub in sections]
     title = ascii_safe(title)
     abstract = ascii_safe(abstract)
     keywords = ascii_safe(keywords)
@@ -1028,15 +1142,15 @@ def generate_pdf_from_html(html_content: str, paper_format: Optional[PaperFormat
             self.set_xy(x, y + len(lines) * line_h)
             return len(lines)
 
-        def draw_section(self, sec_title, size, line_h):
-            if self.fmt.section_centered:
-                n = self.draw_smallcaps(sec_title, size, line_h, "C")
-                self.col_ln(n * line_h + 2)
-            else:
-                self.set_font(self.fmt.font_family, "B", size)
+        def draw_section(self, sec_title, size, line_h, is_subsection=False):
+            if is_subsection or not self.fmt.section_centered:
+                self.set_font(self.fmt.font_family, "I", size)
                 self.multi_cell(self.col_w, line_h * 0.7, sec_title, align="L", new_x="LEFT", new_y="NEXT")
                 self.x = self.col_x_pos()
                 self.col_ln(2)
+            else:
+                n = self.draw_smallcaps(sec_title, size, line_h, "C")
+                self.col_ln(n * line_h + 2)
 
     pdf = IEEE_PDF()
     pdf.add_page()
@@ -1086,11 +1200,11 @@ def generate_pdf_from_html(html_content: str, paper_format: Optional[PaperFormat
     pdf.body_start_y = cy
 
     # --- Body (two columns) ---
-    for sec_title, sec_content, tables in sections:
+    for sec_title, sec_content, tables, is_sub in sections:
         size, line_h = fmt.body_font_size, fmt.body_font_size + 2
-        hdr_h = 16
+        hdr_h = 12 if is_sub else 18
         pdf.ensure_col(hdr_h)
-        pdf.draw_section(sec_title, size, line_h)
+        pdf.draw_section(sec_title, size, line_h, is_subsection=is_sub)
 
         img_re = re.compile(r'!\[(.*?)\]\(([^)]+)\)')
         for para in sec_content.split('\n'):
@@ -1137,6 +1251,18 @@ def generate_pdf_from_html(html_content: str, paper_format: Optional[PaperFormat
                 pdf.x = pdf.col_x_pos()
             pdf.col_ln(2)
 
+    # --- References (two columns) ---
+    if pdf_refs:
+        hdr_h = 16
+        pdf.ensure_col(hdr_h)
+        pdf.draw_section("References", fmt.body_font_size, fmt.body_font_size + 2)
+        for r_text in pdf_refs:
+            r_safe = ascii_safe(r_text)
+            pdf.set_font(fmt.font_family, "", fmt.body_font_size - 1)
+            pdf.multi_cell(pdf.col_w, 4.5, r_safe, align="L", new_x="LEFT", new_y="NEXT")
+            pdf.x = pdf.col_x_pos()
+            pdf.col_ln(1.5)
+
     return bytes(pdf.output())
 
 
@@ -1171,6 +1297,45 @@ def _add_run(paragraph, text, size=10, bold=False, italic=False, font_name='Time
     if small_caps:
         run.font.small_caps = True
     return run
+
+
+def _add_formatted_runs(paragraph, text, size=10, base_bold=False, base_italic=False, font_name='Times New Roman'):
+    """Parse inline markdown (***, **, *, `) and add styled runs to paragraph."""
+    token_pattern = re.compile(r'(\*\*\*.*?\*\*\*|\*\*.*?\*\*|\*.*?\*|`.*?`)')
+    parts = token_pattern.split(text)
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith('***') and part.endswith('***') and len(part) >= 6:
+            r = paragraph.add_run(part[3:-3])
+            r.font.name = font_name
+            r.font.size = Pt(size)
+            r.bold = True
+            r.italic = True
+        elif part.startswith('**') and part.endswith('**') and len(part) >= 4:
+            r = paragraph.add_run(part[2:-2])
+            r.font.name = font_name
+            r.font.size = Pt(size)
+            r.bold = True
+            r.italic = base_italic
+        elif part.startswith('*') and part.endswith('*') and len(part) >= 2:
+            r = paragraph.add_run(part[1:-1])
+            r.font.name = font_name
+            r.font.size = Pt(size)
+            r.bold = base_bold
+            r.italic = True
+        elif part.startswith('`') and part.endswith('`') and len(part) >= 2:
+            r = paragraph.add_run(part[1:-1])
+            r.font.name = 'Courier New'
+            r.font.size = Pt(size - 0.5)
+            r.bold = base_bold
+            r.italic = base_italic
+        else:
+            r = paragraph.add_run(part)
+            r.font.name = font_name
+            r.font.size = Pt(size)
+            r.bold = base_bold
+            r.italic = base_italic
 
 
 def _set_cols(sectPr, num=None, space='720'):
@@ -1220,7 +1385,7 @@ def _is_caption(s):
 
 
 def _render_body_docx(doc, content, session_dir=""):
-    """Parse body content text and add paragraphs, tables, and images to the document."""
+    """Parse body content text and add paragraphs, tables, lists, and images to the document."""
     img_re = re.compile(r'!\[(.*?)\]\(([^)]+)\)')
     lines = [l.rstrip() for l in content.split("\n")]
     i, n = 0, len(lines)
@@ -1245,7 +1410,7 @@ def _render_body_docx(doc, content, session_dir=""):
                     run.add_picture(img_path, width=Inches(3))
                     p2 = doc.add_paragraph()
                     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    _add_run(p2, alt, size=9, italic=True)
+                    _add_formatted_runs(p2, alt, size=9, base_italic=True)
                 except Exception:
                     pass
             i += 1
@@ -1279,20 +1444,60 @@ def _render_body_docx(doc, content, session_dir=""):
                     cell = tbl.cell(0, j)
                     cp = cell.paragraphs[0]
                     cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    _add_run(cp, h, size=9, bold=True)
+                    _add_formatted_runs(cp, h, size=9, base_bold=True)
                 for ri, row in enumerate(data):
                     for ci, val in enumerate(row):
                         cell = tbl.cell(ri + 1, ci)
                         cp = cell.paragraphs[0]
                         cp.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                        _add_run(cp, val, size=9)
+                        _add_formatted_runs(cp, val, size=9)
+            continue
+
+        # ---- Bullet item ----
+        bullet_m = re.match(r'^\s*[-*•]\s+(.*)', stripped)
+        if bullet_m:
+            item_text = bullet_m.group(1).strip()
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Inches(0.25)
+            p.paragraph_format.first_line_indent = Inches(-0.15)
+            p.paragraph_format.space_before = Pt(1)
+            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.line_spacing = 1.0
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_sym = p.add_run('•\t')
+            r_sym.font.name = 'Times New Roman'
+            r_sym.font.size = Pt(10)
+            _add_formatted_runs(p, item_text, size=10)
+            i += 1
+            continue
+
+        # ---- Numbered list item ----
+        num_m = re.match(r'^\s*(\d+[\.\)])\s+(.*)', stripped)
+        if num_m:
+            prefix = num_m.group(1)
+            item_text = num_m.group(2).strip()
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Inches(0.25)
+            p.paragraph_format.first_line_indent = Inches(-0.15)
+            p.paragraph_format.space_before = Pt(1)
+            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.line_spacing = 1.0
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r_sym = p.add_run(f'{prefix}\t')
+            r_sym.font.name = 'Times New Roman'
+            r_sym.font.size = Pt(10)
+            _add_formatted_runs(p, item_text, size=10)
+            i += 1
             continue
 
         # ---- Regular paragraph ----
         para = [stripped]
         i += 1
         while i < n and lines[i].strip() and "|" not in lines[i] and not _is_table_sep(lines[i]) and not _is_caption(lines[i].strip()):
-            para.append(lines[i].strip())
+            next_s = lines[i].strip()
+            if img_re.match(next_s) or re.match(r'^\s*[-*•]\s+', next_s) or re.match(r'^\s*\d+[\.\)]\s+', next_s):
+                break
+            para.append(next_s)
             i += 1
 
         p = doc.add_paragraph()
@@ -1301,7 +1506,7 @@ def _render_body_docx(doc, content, session_dir=""):
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing = 1.0
-        _add_run(p, ' '.join(para), size=10)
+        _add_formatted_runs(p, ' '.join(para), size=10)
 
 
 def generate_ieee_docx(paper_json: dict, session_dir: str = "") -> bytes:
@@ -1384,7 +1589,7 @@ def generate_ieee_docx(paper_json: dict, session_dir: str = "") -> bytes:
         p_abs.paragraph_format.space_after = Pt(0)
         p_abs.paragraph_format.line_spacing = Pt(12)   # 240 twips
         _add_run(p_abs, 'Abstract—', size=10, bold=True, italic=True)
-        _add_run(p_abs, abstract_text, size=10, bold=True, italic=True)
+        _add_formatted_runs(p_abs, abstract_text, size=10, base_bold=True, base_italic=True)
 
     # ── Index Terms (italic) ──
     keywords = paper_json.get('keywords', [])
@@ -1415,8 +1620,8 @@ def generate_ieee_docx(paper_json: dict, session_dir: str = "") -> bytes:
         if not sec_title:
             continue
 
-        # Detect subsection: title starts with number+period (e.g. "2.1")
-        is_subsection = bool(re.match(r'^(\d+\.\d+)', sec_title))
+        # Detect subsection using IEEE hierarchy rules
+        is_subsection = _is_subsection_heading(sec_title, sec.get('level', 2))
 
         if is_subsection:
             # Heading 2 — italic, left-aligned
@@ -1440,15 +1645,13 @@ def generate_ieee_docx(paper_json: dict, session_dir: str = "") -> bytes:
     # ═══════════════════════════════════════════════════════════════
     # CONTINUOUS BREAK → SECTION 3  (two columns, references)
     # ═══════════════════════════════════════════════════════════════
-    doc.add_section()
-    _set_continuous_section_break(doc)
-
-    sect_pr_3 = doc.sections[2]._sectPr
-    _set_cols(sect_pr_3, num='2', space='461')
-
-    # ── Section 3: References ──
     refs = paper_json.get('references', [])
     if refs:
+        doc.add_section()
+        _set_continuous_section_break(doc)
+        sect_pr_3 = doc.sections[-1]._sectPr
+        _set_cols(sect_pr_3, num='2', space='461')
+
         p_ref_h = doc.add_paragraph()
         p_ref_h.paragraph_format.space_before = Pt(12)
         p_ref_h.paragraph_format.space_after = Pt(6)
@@ -1940,14 +2143,28 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
             return ""
         if not isinstance(t, str):
             t = str(t)
-        t = t.replace('\u2014', '--').replace('\u2013', '-')
-        t = t.replace('\u2018', "'").replace('\u2019', "'")
-        t = t.replace('\u201c', '"').replace('\u201d', '"')
-        t = t.replace('\u00b2', '^2').replace('\u00b3', '^3')
-        t = t.replace('\u00d7', 'x').replace('\u00f7', '/')
-        t = t.replace('\u2022', '--').replace('\u2023', '-')
-        t = t.replace('\u00b7', '|')
-        return t.encode('latin-1', 'replace').decode('latin-1')
+        import unicodedata
+        replacements = {
+            '\u2014': '--', '\u2013': '-', '\u2015': '--', '\u2012': '-', '\u2010': '-', '\u2212': '-',
+            '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'",
+            '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u201f': '"', '\u00ab': '"', '\u00bb': '"',
+            '\u2022': '* ', '\u2023': '- ', '\u25cf': '* ', '\u25cb': 'o ', '\u25aa': '- ', '\u25ab': '- ',
+            '\u00a0': ' ', '\u200b': '', '\u2003': ' ', '\u2026': '...',
+            '\u00b2': '^2', '\u00b3': '^3', '\u00b0': ' deg ', '\u00b1': '+/-',
+            '\u00d7': 'x', '\u00f7': '/', '\u00b7': '|', '\u2217': '*',
+            '\u03b1': 'alpha', '\u03b2': 'beta', '\u03b3': 'gamma', '\u03b4': 'delta',
+            '\u03b8': 'theta', '\u03bb': 'lambda', '\u03bc': 'mu', '\u03c0': 'pi',
+            '\u03c3': 'sigma', '\u03c9': 'omega', '\u0394': 'Delta', '\u03a3': 'Sigma',
+            '\u2202': 'd', '\u2207': 'nabla', '\u2211': 'sum', '\u221e': 'inf',
+            '\u2264': '<=', '\u2265': '>=', '\u2260': '!=', '\u2248': '~=', '\u2261': '==',
+            '\u2192': '->', '\u2190': '<-', '\u21d2': '=>', '\u21d4': '<=>', '\u221a': 'sqrt',
+            '\u2208': ' in ', '\u2209': ' not in ',
+            '\u2122': '(TM)', '\u00a9': '(C)', '\u00ae': '(R)'
+        }
+        for k, v in replacements.items():
+            t = t.replace(k, v)
+        t = unicodedata.normalize('NFKD', t)
+        return t.encode('latin-1', 'ignore').decode('latin-1')
 
     name = ascii_safe(resume_data.get("name") or "Resume")
     email = ascii_safe(resume_data.get("email") or "")

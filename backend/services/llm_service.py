@@ -609,8 +609,8 @@ def _flow_like_paper(tokens):
     if cleaned.strip():
         start = cleaned
     start = _clean_meta_reasoning(start)
-    for i in range(0, len(start), 1200):
-        yield start[i:i + 1200]
+    for i in range(0, len(start), 180):
+        yield start[i:i + 180]
 
 
 def _extract_references_from_text(file_text: str, limit: int = 10) -> list:
@@ -672,8 +672,12 @@ TITLE: {title}{domain_instruction}{kw_instruction}
 STRICT ACCURACY RULES:
 1. GROUNDING: Every paragraph must be traceable to the source document or the interview answers. Do NOT introduce new facts, names, numbers, statistics, research results, or claims anywhere.
 2. When a statement comes from the document, phrase it faithfully (e.g., "the document describes ...", "the author reports ...", "this work presents ...").
-3. SECTIONS: Build sections from what the document actually contains. Do NOT include a section the document does not support. If there is no methodology, no results, or no experiments in the source, do NOT create "Methodology" or "Results and Discussion" sections — use "Overview", "Background", "Discussion", "Conclusion" as appropriate. A suggested skeleton is: ## Abstract, ## Introduction, then document-driven sections, ## Conclusion.
-4. REFERENCES: Cite ONLY references that appear in the source document or the interview. If the source has none, OMIT the References section entirely. Never invent DOIs, volumes, pages, years, or author names.
+3. IEEE HEADING HIERARCHY:
+   - Primary Sections: Use Roman numerals with '##', e.g. ## I. Introduction, ## II. Related Work, ## III. Methodology, ## IV. Results, ## V. Conclusion. (Unnumbered: ## Abstract, ## References).
+   - Subsections: Use capital letters with '###', e.g. ### A. System Architecture, ### B. Feature Extraction.
+   - Sub-subsections: Use numbers with '####', e.g. #### 1) Optimization Function.
+   Build sections strictly from what the document contains. If there is no methodology or experiment in the source, do NOT create empty sections.
+4. REFERENCES: Cite ONLY references that appear in the source document or the interview using bracketed numbers [1], [2]. If the source has none, OMIT the References section entirely. Never invent DOIs, volumes, pages, years, or author names.
 5. DATA: Use only the data points listed in the audit or present in the source excerpt. If no quantitative results exist, do not fabricate any numbers.
 6. ABOUT THE AUTHORS: Include this section ONLY if the interview answers provide author names and bios. Otherwise omit it.
 7. You may include one markdown table (using | separators) ONLY if the document provides tabular data, with a "Table 1. ..." caption line above it.
@@ -683,7 +687,7 @@ STRICT ACCURACY RULES:
 ====PAPER_START====
 Then, on the following line, the paper itself. Nothing else before that marker line."""
     messages = [
-        {"role": "system", "content": f"You are an IEEE paper ghostwriter that transforms the user's own uploaded document into an IEEE-format paper with strict fidelity to the source. You never fabricate facts, references, or results. You use only ##-prefixed section headings.\n\n{CONTENT_RULES}"},
+        {"role": "system", "content": f"You are an IEEE paper ghostwriter that transforms the user's uploaded document into a publication-grade IEEE conference paper with strict fidelity to the source. You strictly adhere to IEEE section numbering (I. Section, A. Subsection). You never fabricate facts, references, or numerical results.\n\n{CONTENT_RULES}"},
         {"role": "user", "content": prompt}
     ]
     try:
