@@ -205,6 +205,19 @@ export default function PaperWizard({ onNewSession }) {
   const [resumePreviewKey, setResumePreviewKey] = useState(0);
   const [resumeCustomAnswer, setResumeCustomAnswer] = useState('');
 
+  // ─── Academic Intelligence Tools State ─────────────────────────────────────
+  const [auditData, setAuditData] = useState(null);
+  const [auditing, setAuditing] = useState(false);
+  const [showAuditModal, setShowAuditModal] = useState(false);
+  const [showLitSearchModal, setShowLitSearchModal] = useState(false);
+  const [litQuery, setLitQuery] = useState('');
+  const [litSource, setLitSource] = useState('all');
+  const [litResults, setLitResults] = useState([]);
+  const [litSearching, setLitSearching] = useState(false);
+  const [litAddedIds, setLitAddedIds] = useState(new Set());
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhanceSuccessMsg, setEnhanceSuccessMsg] = useState('');
+
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, aiTyping]);
   // Keep upload history in localStorage so a reload can restore the session
   // list. Without this the sidebar resets to EMPTY and the user loses their
@@ -428,8 +441,126 @@ export default function PaperWizard({ onNewSession }) {
       setEditMode(false);
       setPreviewKey(k => k + 1);
       setAiEditInput('');
+      fetchAudit(sessionId);
     } catch (e) { setEditError(e.message); }
     finally { setAiEditing(false); }
+  };
+
+  // ─── Academic Intelligence Actions ─────────────────────────────────────────
+  const fetchAudit = async (sid = sessionId) => {
+    if (!sid) return;
+    setAuditing(true);
+    try {
+      const data = await apiService.auditPaper(sid);
+      if (data && data.audit) {
+        setAuditData(data.audit);
+      }
+    } catch (e) {
+      console.warn('Audit error:', e);
+    } finally {
+      setAuditing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (result && sessionId && mode !== 'resume' && !auditData) {
+      fetchAudit(sessionId);
+    }
+  }, [result, sessionId, mode]);
+
+  const handleSearchLiterature = async (customQ) => {
+    const q = (customQ || litQuery || '').trim();
+    if (!q) return;
+    setLitSearching(true);
+    try {
+      const data = await apiService.searchLiterature(q, 6, litSource);
+      setLitResults(data.results || []);
+    } catch (e) {
+      console.warn('Lit search error:', e);
+    } finally {
+      setLitSearching(false);
+    }
+  };
+
+  const handleAutoPopulateLiterature = async () => {
+    if (!sessionId) return;
+    setLitSearching(true);
+    try {
+      const data = await apiService.autoLiterature(sessionId, 6);
+      setLitResults(data.results || []);
+      if (data.title && !litQuery) {
+        setLitQuery(data.title);
+      }
+    } catch (e) {
+      console.warn('Auto lit error:', e);
+    } finally {
+      setLitSearching(false);
+    }
+  };
+
+  const handleAddCitation = async (citation, itemKey) => {
+    if (!sessionId || !citation) return;
+    try {
+      const data = await apiService.addCitation(sessionId, citation);
+      if (data && data.result) {
+        setResult(prev => ({
+          ...prev,
+          html_content: data.result.html_content,
+          paper_json: data.result.paper_json,
+        }));
+        setPreviewKey(k => k + 1);
+        setLitAddedIds(prev => new Set(prev).add(itemKey || citation));
+        fetchAudit(sessionId);
+      }
+    } catch (e) {
+      alert('Failed to add citation: ' + e.message);
+    }
+  };
+
+  const handleEnhanceAbstract = async (enhanceMode = 'tighten_abstract') => {
+    if (!sessionId) return;
+    setEnhancing(true);
+    setEnhanceSuccessMsg('');
+    try {
+      const data = await apiService.enhanceSection(sessionId, { target: 'abstract', mode: enhanceMode });
+      if (data && data.result) {
+        setResult(prev => ({
+          ...prev,
+          html_content: data.result.html_content,
+          paper_json: data.result.paper_json,
+        }));
+        setPreviewKey(k => k + 1);
+        setEnhanceSuccessMsg('Abstract successfully refined to IEEE standard!');
+        setTimeout(() => setEnhanceSuccessMsg(''), 4000);
+        fetchAudit(sessionId);
+      }
+    } catch (e) {
+      alert('Refinement failed: ' + e.message);
+    } finally {
+      setEnhancing(false);
+    }
+  };
+
+  const handleEnhanceSectionInEdit = async (i, enhanceMode) => {
+    if (!sessionId || !editable || !editable.sections[i]) return;
+    setEnhancing(true);
+    try {
+      const data = await apiService.enhanceSection(sessionId, {
+        target: 'section',
+        sectionIndex: i,
+        mode: enhanceMode,
+      });
+      if (data && data.result && data.result.paper_json) {
+        const updatedSecs = data.result.paper_json.sections || [];
+        if (updatedSecs[i]) {
+          updateSection(i, { content: updatedSecs[i].content });
+        }
+      }
+    } catch (e) {
+      alert('Section enhancement failed: ' + e.message);
+    } finally {
+      setEnhancing(false);
+    }
   };
 
   // ─── Mode selection ──────────────────────────────────────────────────────
@@ -1277,10 +1408,60 @@ export default function PaperWizard({ onNewSession }) {
             <div className="flex flex-col rounded-2xl border bg-surface-dark border-surface-dark-elevated overflow-hidden min-h-0"
               style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.15)', maxHeight: 'calc(100vh - 180px)' }}>
               <div className="px-5 md:px-8 py-4 border-b border-surface-dark-elevated shrink-0 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-lg font-display text-on-dark flex items-center gap-2">
-                  Paper generated <span className="text-accent-teal">✓</span>
-                </h2>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-lg font-display text-on-dark flex items-center gap-2">
+                    Paper generated <span className="text-accent-teal">✓</span>
+                  </h2>
+                  {auditData && (
+                    <button
+                      onClick={() => setShowAuditModal(true)}
+                      className={`rounded-full px-3 py-1 text-xs font-mono font-medium inline-flex items-center gap-1.5 transition-all active:scale-[0.95] ${
+                        auditData.score >= 80
+                          ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25'
+                          : auditData.score >= 65
+                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25'
+                          : 'bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25'
+                      }`}
+                      title="Click to view IEEE Compliance Audit diagnostics">
+                      <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                      {auditData.score}% IEEE Quality Score ({auditData.grade?.split(' ')[0]})
+                    </button>
+                  )}
+                  {auditing && (
+                    <span className="text-xs text-muted font-mono flex items-center gap-1">
+                      <TypingDots /> Auditing compliance...
+                    </span>
+                  )}
+                  {enhanceSuccessMsg && (
+                    <span className="text-xs text-emerald-400 font-medium px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                      {enhanceSuccessMsg}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setShowLitSearchModal(true);
+                      if (litResults.length === 0) handleAutoPopulateLiterature();
+                    }}
+                    className="rounded-full text-xs md:text-sm font-medium px-3.5 py-1.5 transition-all active:scale-[0.95] inline-flex items-center gap-1.5 bg-surface-dark-elevated text-on-dark border border-surface-dark-elevated hover:border-accent-teal/50 hover:text-white">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    Find Literature
+                  </button>
+
+                  <button
+                    onClick={() => handleEnhanceAbstract('tighten_abstract')}
+                    disabled={enhancing}
+                    className="rounded-full text-xs md:text-sm font-medium px-3.5 py-1.5 transition-all active:scale-[0.95] inline-flex items-center gap-1.5 bg-surface-dark-elevated text-on-dark border border-surface-dark-elevated hover:border-primary/50 hover:text-white disabled:opacity-50">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+                    </svg>
+                    {enhancing ? 'Polishing…' : 'Refine Abstract'}
+                  </button>
+
                   {!editMode && (
                     <button onClick={enterEdit}
                       className="rounded-full text-sm font-medium px-4 py-1.5 transition-all active:scale-[0.95] inline-flex items-center gap-1.5 border border-surface-dark-elevated text-muted hover:border-on-dark-soft hover:text-white">
@@ -1335,7 +1516,16 @@ export default function PaperWizard({ onNewSession }) {
                   </div>
 
                   <div>
-                    <p className="text-xs font-mono uppercase mb-1.5 text-muted">Abstract</p>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-xs font-mono uppercase text-muted">Abstract</p>
+                      <button
+                        type="button"
+                        onClick={() => handleEnhanceAbstract('tighten_abstract')}
+                        disabled={enhancing}
+                        className="text-xs text-primary hover:underline flex items-center gap-1 disabled:opacity-40">
+                        ✨ Polish Abstract with IEEE Guidelines
+                      </button>
+                    </div>
                     <textarea className="w-full rounded-xl px-4 py-3 text-sm outline-none bg-surface-dark-elevated text-on-dark border border-transparent focus:border-primary resize-y min-h-[90px]"
                       value={editable.abstract} onChange={e => updateEditable({ abstract: e.target.value })} />
                   </div>
@@ -1351,8 +1541,36 @@ export default function PaperWizard({ onNewSession }) {
                     <div className="space-y-4">
                       {editable.sections.map((s, i) => (
                         <div key={i} className="rounded-xl p-4 border border-surface-dark-elevated">
-                          <input className="w-full rounded-lg px-3 py-2 text-sm font-medium outline-none bg-surface-dark text-on-dark border border-transparent focus:border-primary mb-2"
-                            value={s.title} onChange={e => updateSection(i, { title: e.target.value })} />
+                          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                            <input className="flex-1 min-w-[200px] rounded-lg px-3 py-2 text-sm font-medium outline-none bg-surface-dark text-on-dark border border-transparent focus:border-primary"
+                              value={s.title} onChange={e => updateSection(i, { title: e.target.value })} />
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleEnhanceSectionInEdit(i, 'academic_tone')}
+                                disabled={enhancing}
+                                className="px-2.5 py-1 text-xs rounded-lg bg-surface-dark-elevated hover:bg-surface-dark-elevated/80 text-muted hover:text-white border border-surface-dark-elevated transition-all"
+                                title="Upgrade section to formal IEEE academic register">
+                                ✨ Tone
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEnhanceSectionInEdit(i, 'latex_equations')}
+                                disabled={enhancing}
+                                className="px-2.5 py-1 text-xs rounded-lg bg-surface-dark-elevated hover:bg-surface-dark-elevated/80 text-muted hover:text-white border border-surface-dark-elevated transition-all"
+                                title="Format mathematical relations into numbered LaTeX equations">
+                                📐 LaTeX
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEnhanceSectionInEdit(i, 'strengthen_methodology')}
+                                disabled={enhancing}
+                                className="px-2.5 py-1 text-xs rounded-lg bg-surface-dark-elevated hover:bg-surface-dark-elevated/80 text-muted hover:text-white border border-surface-dark-elevated transition-all"
+                                title="Strengthen formal methodology and algorithmic parameters">
+                                🔬 Method
+                              </button>
+                            </div>
+                          </div>
                           <textarea className="w-full rounded-lg px-3 py-2 text-sm outline-none bg-surface-dark text-on-dark border border-transparent focus:border-primary resize-y min-h-[100px]"
                             value={s.content} onChange={e => updateSection(i, { content: e.target.value })} />
                         </div>
@@ -1361,7 +1579,15 @@ export default function PaperWizard({ onNewSession }) {
                   </div>
 
                   <div>
-                    <p className="text-xs font-mono uppercase mb-2 text-muted">References</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-mono uppercase text-muted">References</p>
+                      <button
+                        type="button"
+                        onClick={() => setShowLitSearchModal(true)}
+                        className="text-xs text-accent-teal hover:underline flex items-center gap-1">
+                        + Search & Add Citations
+                      </button>
+                    </div>
                     <div className="space-y-2">
                       {editable.references.map((r, i) => (
                         <textarea key={i} className="w-full rounded-xl px-3 py-2 text-sm outline-none bg-surface-dark-elevated text-on-dark border border-transparent focus:border-primary resize-y min-h-[48px]"
@@ -1502,6 +1728,249 @@ export default function PaperWizard({ onNewSession }) {
           )}
         </div>
       </div>
+
+      {/* ─── IEEE Compliance Audit Modal ────────────────────────────────────── */}
+      {showAuditModal && auditData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-surface-dark border border-surface-dark-elevated shadow-2xl overflow-hidden animate-fade-in">
+            <div className="px-6 py-4 border-b border-surface-dark-elevated flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-primary/20 text-primary flex items-center justify-center font-bold text-sm">
+                  IEEE
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-on-dark">IEEE Compliance & Quality Audit</h3>
+                  <p className="text-xs text-muted">Automated peer-review standard diagnostics</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowAuditModal(false)}
+                className="p-1.5 text-muted hover:text-white rounded-lg hover:bg-surface-dark-elevated transition-colors">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5">
+              {/* Score Summary */}
+              <div className="p-4 rounded-xl bg-surface-dark-elevated border border-surface-dark-elevated flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-mono uppercase text-muted">Quality Score</span>
+                  <div className="text-3xl font-bold text-on-dark mt-0.5 flex items-baseline gap-2">
+                    <span>{auditData.score}</span>
+                    <span className="text-sm font-normal text-muted">/ 100</span>
+                    <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${
+                      auditData.score >= 80 ? 'bg-emerald-500/20 text-emerald-300' :
+                      auditData.score >= 65 ? 'bg-amber-500/20 text-amber-300' : 'bg-rose-500/20 text-rose-300'
+                    }`}>
+                      {auditData.grade}
+                    </span>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-mono uppercase text-muted">Status</span>
+                  <p className={`text-sm font-semibold mt-1 ${auditData.passed ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {auditData.passed ? '✓ Publication Ready' : '⚠ Polish Recommended'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Checks */}
+              <div>
+                <h4 className="text-xs font-mono uppercase tracking-wider text-muted mb-3">Diagnostic Checks</h4>
+                <div className="space-y-2.5">
+                  {auditData.checks?.map((chk) => (
+                    <div key={chk.id} className="p-3.5 rounded-xl border bg-surface-dark-elevated/40 border-surface-dark-elevated">
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full ${
+                            chk.status === 'pass' ? 'bg-emerald-400' :
+                            chk.status === 'warning' ? 'bg-amber-400' : 'bg-rose-400'
+                          }`} />
+                          <span className="text-sm font-medium text-on-dark">{chk.name}</span>
+                        </div>
+                        <span className="text-xs font-mono text-muted">{chk.score}/{chk.max_score} pts</span>
+                      </div>
+                      <p className="text-xs text-muted-soft pl-4">{chk.message}</p>
+                      {chk.recommendation && (
+                        <p className="text-xs text-primary pl-4 mt-1">💡 {chk.recommendation}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Metrics */}
+              {auditData.metrics && (
+                <div>
+                  <h4 className="text-xs font-mono uppercase tracking-wider text-muted mb-3">Paper Metrics</h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="p-3 rounded-xl bg-surface-dark-elevated/40 text-center">
+                      <span className="text-xs text-muted">Abstract Words</span>
+                      <p className="text-base font-bold text-on-dark mt-0.5">{auditData.metrics.abstract_word_count}</p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-surface-dark-elevated/40 text-center">
+                      <span className="text-xs text-muted">Index Terms</span>
+                      <p className="text-base font-bold text-on-dark mt-0.5">{auditData.metrics.keyword_count}</p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-surface-dark-elevated/40 text-center">
+                      <span className="text-xs text-muted">Sections</span>
+                      <p className="text-base font-bold text-on-dark mt-0.5">{auditData.metrics.section_count}</p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-surface-dark-elevated/40 text-center">
+                      <span className="text-xs text-muted">References</span>
+                      <p className="text-base font-bold text-on-dark mt-0.5">{auditData.metrics.reference_count}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-3 border-t border-surface-dark-elevated flex justify-end">
+              <button
+                onClick={() => setShowAuditModal(false)}
+                className="rounded-full text-xs font-medium px-5 py-2 bg-primary text-white hover:opacity-90 transition-all">
+                Close Diagnostics
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Academic Literature Search Modal ───────────────────────────────── */}
+      {showLitSearchModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl bg-surface-dark border border-surface-dark-elevated shadow-2xl overflow-hidden animate-fade-in">
+            <div className="px-6 py-4 border-b border-surface-dark-elevated flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-accent-teal/20 text-accent-teal flex items-center justify-center font-bold text-base">
+                  🔍
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-on-dark">Academic Literature Search</h3>
+                  <p className="text-xs text-muted">Search arXiv and CrossRef for verifiable citations</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowLitSearchModal(false)}
+                className="p-1.5 text-muted hover:text-white rounded-lg hover:bg-surface-dark-elevated transition-colors">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4">
+              {/* Search Bar */}
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  className="flex-1 rounded-xl px-4 py-2.5 text-sm outline-none bg-surface-dark-elevated text-on-dark border border-surface-dark-elevated focus:border-primary"
+                  placeholder="Enter keywords or paper title..."
+                  value={litQuery}
+                  onChange={e => setLitQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSearchLiterature()}
+                />
+                <div className="flex gap-2">
+                  <select
+                    className="rounded-xl px-3 py-2 text-xs outline-none bg-surface-dark-elevated text-on-dark border border-surface-dark-elevated cursor-pointer"
+                    value={litSource}
+                    onChange={e => setLitSource(e.target.value)}>
+                    <option value="all">All Sources</option>
+                    <option value="arxiv">arXiv (Preprints)</option>
+                    <option value="crossref">Crossref (Journals)</option>
+                  </select>
+                  <button
+                    onClick={() => handleSearchLiterature()}
+                    disabled={litSearching || !litQuery.trim()}
+                    className="rounded-xl px-4 py-2 text-xs font-medium bg-primary text-white hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5">
+                    {litSearching ? 'Searching…' : 'Search'}
+                  </button>
+                </div>
+              </div>
+
+              {/* 1-Click Auto-Discover */}
+              <div className="flex items-center justify-between p-3 rounded-xl bg-surface-dark-elevated/40 border border-surface-dark-elevated">
+                <span className="text-xs text-muted">Auto-discover papers matching your paper's topic:</span>
+                <button
+                  onClick={handleAutoPopulateLiterature}
+                  disabled={litSearching}
+                  className="text-xs font-medium text-accent-teal hover:underline disabled:opacity-40">
+                  Auto-Discover Literature →
+                </button>
+              </div>
+
+              {/* Results */}
+              <div className="space-y-3">
+                {litSearching && (
+                  <div className="text-center py-10">
+                    <TypingDots />
+                    <p className="text-xs text-muted mt-2">Querying academic repositories...</p>
+                  </div>
+                )}
+
+                {!litSearching && litResults.length === 0 && (
+                  <div className="text-center py-8 text-muted text-xs">
+                    No papers found. Enter a keyword or click Auto-Discover.
+                  </div>
+                )}
+
+                {!litSearching && litResults.map((item, idx) => {
+                  const itemKey = item.id || item.ieee_citation;
+                  const isAdded = litAddedIds.has(itemKey);
+                  return (
+                    <div key={itemKey || idx} className="p-4 rounded-xl border border-surface-dark-elevated bg-surface-dark-elevated/40 flex flex-col gap-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-dark text-muted border border-surface-dark-elevated">
+                              {item.source} • {item.year}
+                            </span>
+                            {item.url && (
+                              <a href={item.url} target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline truncate">
+                                View Paper ↗
+                              </a>
+                            )}
+                          </div>
+                          <h4 className="text-sm font-semibold text-on-dark">{item.title}</h4>
+                          <p className="text-xs text-muted mt-0.5">{item.authors_display}</p>
+                        </div>
+                        <button
+                          onClick={() => handleAddCitation(item.ieee_citation, itemKey)}
+                          disabled={isAdded}
+                          className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-medium transition-all ${
+                            isAdded
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 cursor-default'
+                              : 'bg-primary text-white hover:opacity-90 active:scale-[0.95]'
+                          }`}>
+                          {isAdded ? '✓ Added' : '+ Add to References'}
+                        </button>
+                      </div>
+                      {item.summary && (
+                        <p className="text-xs text-muted-soft line-clamp-2">{item.summary}</p>
+                      )}
+                      <div className="p-2 rounded-lg bg-surface-dark text-[11px] font-mono text-muted border border-surface-dark-elevated select-all">
+                        {item.ieee_citation}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="px-6 py-3 border-t border-surface-dark-elevated flex justify-between items-center">
+              <span className="text-xs text-muted">Adding citations synchronizes the generated PDF, DOCX, and live preview.</span>
+              <button
+                onClick={() => setShowLitSearchModal(false)}
+                className="rounded-full text-xs font-medium px-4 py-2 border border-surface-dark-elevated text-muted hover:text-white transition-all">
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

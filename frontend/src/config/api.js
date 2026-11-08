@@ -104,4 +104,41 @@ export const apiService = {
     });
   },
 
+  // ─── Academic Intelligence Tools ──────────────────────────────────────────
+  auditPaper(sessionId) {
+    return req(`${BASE}/api/tools/audit-paper/${sessionId}`);
+  },
+
+  searchLiterature(query, maxResults = 5, source = 'all') {
+    return req(`${BASE}/api/tools/search-literature`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, max_results: maxResults, source }),
+    });
+  },
+
+  autoLiterature(sessionId, maxResults = 5) {
+    return req(`${BASE}/api/tools/auto-literature/${sessionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_results: maxResults }),
+    });
+  },
+
+  enhanceSection(sessionId, { target = 'section', sectionIndex = 0, mode = 'academic_tone' } = {}) {
+    return req(`${BASE}/api/tools/enhance-section/${sessionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, section_index: sectionIndex, mode }),
+    });
+  },
+
+  addCitation(sessionId, citation) {
+    return req(`${BASE}/api/tools/add-citation/${sessionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ citation }),
+    });
+  },
+
 };

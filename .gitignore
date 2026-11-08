@@ -24,3 +24,4 @@ sample_*
 check*.html
 SmartDoc_AI*.html
 test_*.html
+session_store/

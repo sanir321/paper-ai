@@ -22,6 +22,10 @@ from services.llm_service import (
     analyze_document_for_resume, generate_resume_question, generate_resume_stream, edit_resume,
     find_paper_start
 )
+from services.academic_tools import (
+    search_arxiv, search_crossref, auto_populate_literature,
+    audit_ieee_compliance, enhance_section_text
+)
 
 # ─── Paper Format presets ──────────────────────────────────────────────────────
 
@@ -2771,15 +2775,8 @@ async def download_resume(session_id: str, fmt: str):
     raise HTTPException(404, "Format not found")
 
 
-@app.post("/api/save-paper/{session_id}")
-async def save_paper(session_id: str, data: dict):
-    s = sessions.get(session_id)
-    if not s:
-        raise HTTPException(404, "Session not found")
-    _touch_session(session_id)
-
-    pj = data.get("paper_json", {})
-    title = pj.get("title", s["analysis"].get("title", "Research Paper"))
+def _rebuild_paper_from_json(session_id: str, s: dict, pj: dict) -> dict:
+    title = pj.get("title") or s.get("analysis", {}).get("title") or "Research Paper"
     authors = [
         {"name": a.get("name", ""), "affiliation": a.get("affiliation", ""), "email": a.get("email", "")}
         for a in pj.get("authors", [])
@@ -2789,17 +2786,29 @@ async def save_paper(session_id: str, data: dict):
     if isinstance(kw, str):
         kw = [k.strip() for k in kw.split(",") if k.strip()]
     sections = [{"title": sec.get("title", ""), "content": sec.get("content", "")} for sec in pj.get("sections", [])]
-    refs = [{"citation": r} for r in pj.get("references", [])]
-    html = generate_ieee_html(title, authors, abstract, sections, kw, s["analysis"].get("domain", "Technology"), refs)
+    refs = [{"citation": r if isinstance(r, str) else r.get("citation", "")} for r in pj.get("references", [])]
+
+    domain = s.get("analysis", {}).get("domain", "Technology")
+    html = generate_ieee_html(title, authors, abstract, sections, kw, domain, refs)
     paper_text = build_markdown(title, abstract, sections, kw, [r["citation"] for r in refs])
+
     pj["title"] = title
+    pj["authors"] = authors
+    pj["abstract"] = abstract
+    pj["keywords"] = kw
+    pj["sections"] = sections
+    pj["references"] = [r["citation"] for r in refs]
+
     s["html_content"] = html
     s["paper_text"] = paper_text
     s["paper_json"] = pj
+    s.setdefault("analysis", {})
     s["analysis"]["title"] = title
     s["analysis"]["authors"] = authors
     s["analysis"]["keywords"] = kw
-    base = title.replace(' ', '_')
+    _persist_session(session_id)
+
+    base = title.replace(" ", "_")
     return {
         "paper_text": paper_text,
         "html_content": html,
@@ -2810,6 +2819,136 @@ async def save_paper(session_id: str, data: dict):
         "filename_docx": f"{base}.docx",
         "paper_json": pj,
     }
+
+
+@app.post("/api/save-paper/{session_id}")
+async def save_paper(session_id: str, data: dict):
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    _touch_session(session_id)
+
+    pj = data.get("paper_json", {})
+    return _rebuild_paper_from_json(session_id, s, pj)
+
+
+# ─── Academic Intelligence Tools Endpoints ─────────────────────────────────────
+
+@app.post("/api/tools/search-literature")
+async def search_literature_endpoint(data: dict):
+    query = (data.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "Query cannot be empty")
+    max_results = min(int(data.get("max_results", 5)), 10)
+    source = (data.get("source") or "all").lower()
+
+    if source == "arxiv":
+        results = search_arxiv(query, max_results=max_results)
+    elif source == "crossref":
+        results = search_crossref(query, max_results=max_results)
+    else:
+        half = max(1, max_results // 2)
+        ar = search_arxiv(query, max_results=half)
+        cr = search_crossref(query, max_results=max_results - len(ar))
+        results = ar + cr
+
+    return {"query": query, "count": len(results), "results": results}
+
+
+@app.post("/api/tools/auto-literature/{session_id}")
+async def auto_literature_endpoint(session_id: str, data: Optional[dict] = None):
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    _touch_session(session_id)
+
+    pj = s.get("paper_json") or {}
+    title = pj.get("title") or s.get("analysis", {}).get("title", "")
+    domain = s.get("analysis", {}).get("domain", "")
+    max_results = min(int((data or {}).get("max_results", 5)), 8)
+
+    results = auto_populate_literature(title, domain, max_results=max_results)
+    return {"session_id": session_id, "title": title, "count": len(results), "results": results}
+
+
+@app.get("/api/tools/audit-paper/{session_id}")
+async def audit_paper_endpoint(session_id: str):
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    _touch_session(session_id)
+
+    pj = s.get("paper_json")
+    if not pj and s.get("paper_text"):
+        parsed = parse_paper_text(s["paper_text"], s.get("analysis", {}), session_id)
+        pj = parsed.get("paper_json")
+        s["paper_json"] = pj
+
+    if not pj:
+        raise HTTPException(400, "No paper generated yet for this session")
+
+    audit = audit_ieee_compliance(pj)
+    return {"session_id": session_id, "audit": audit}
+
+
+@app.post("/api/tools/enhance-section/{session_id}")
+async def enhance_section_endpoint(session_id: str, data: dict):
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    _touch_session(session_id)
+
+    pj = s.get("paper_json") or {}
+    target = data.get("target", "section")
+    mode = data.get("mode", "academic_tone")
+    section_index = int(data.get("section_index", 0))
+
+    if target == "abstract":
+        curr = pj.get("abstract", "")
+        enhanced = enhance_section_text(curr, mode=mode, section_title="Abstract")
+        pj["abstract"] = enhanced
+    else:
+        sections = pj.get("sections", [])
+        if 0 <= section_index < len(sections):
+            curr_title = sections[section_index].get("title", "")
+            curr_content = sections[section_index].get("content", "")
+            enhanced = enhance_section_text(curr_content, mode=mode, section_title=curr_title)
+            sections[section_index]["content"] = enhanced
+            pj["sections"] = sections
+        else:
+            raise HTTPException(400, f"Invalid section index {section_index}")
+
+    res = _rebuild_paper_from_json(session_id, s, pj)
+    return {"status": "success", "mode": mode, "result": res}
+
+
+@app.post("/api/tools/add-citation/{session_id}")
+async def add_citation_endpoint(session_id: str, data: dict):
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    _touch_session(session_id)
+
+    citation = (data.get("citation") or "").strip()
+    if not citation:
+        raise HTTPException(400, "Empty citation")
+
+    pj = s.get("paper_json") or {}
+    refs = list(pj.get("references", []))
+
+    # Strip existing bracket numbering if present so we can re-index cleanly
+    clean_citation_body = re.sub(r"^\[\d+\]\s*", "", citation).strip()
+    next_num = len(refs) + 1
+    formatted_citation = f"[{next_num}] {clean_citation_body}"
+
+    # Deduplicate against existing references
+    existing_bodies = [re.sub(r"^\[\d+\]\s*", "", r).strip().lower() for r in refs]
+    if clean_citation_body.lower() not in existing_bodies:
+        refs.append(formatted_citation)
+
+    pj["references"] = refs
+    res = _rebuild_paper_from_json(session_id, s, pj)
+    return {"status": "success", "references": refs, "result": res}
 
 
 @app.post("/api/edit-paper/{session_id}")
