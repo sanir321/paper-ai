@@ -923,9 +923,10 @@ def _extract_resume_metadata_heuristic(file_text: str) -> dict:
     }
     lines = [l.strip() for l in file_text.split("\n") if l.strip()]
     if lines:
-        first = lines[0].lstrip("#").strip()
-        if len(first.split()) <= 4 and not any(c in first for c in ["@", "http", ".com"]):
-            res["name"] = first
+        first = lines[0].lstrip("#*- ").strip()
+        first_clean = re.sub(r'[*_`]', '', first)
+        if len(first_clean.split()) <= 4 and not any(c in first_clean for c in ["@", "http", ".com"]):
+            res["name"] = first_clean
 
     em = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', file_text)
     if em:
@@ -934,6 +935,50 @@ def _extract_resume_metadata_heuristic(file_text: str) -> dict:
     ph = re.search(r'[\+]?[\d\-\(\)\s]{7,}', file_text)
     if ph and sum(c.isdigit() for c in ph.group(0)) >= 7:
         res["phone"] = ph.group(0).strip()
+
+    cur_sec = None
+    summary_parts = []
+    for line in lines:
+        clean = line.lstrip("#*-• ").strip()
+        clean = re.sub(r'[*_`]', '', clean).strip()
+        if not clean:
+            continue
+        cl = clean.lower()
+        cl_head = re.sub(r'^(?:section\s+)?\d+[\.\)]?\s*', '', cl).strip(': -')
+        if any(k in cl_head for k in ["summary", "profile", "about"]):
+            cur_sec = "summary"
+            continue
+        elif any(k in cl_head for k in ["experience", "employment", "work history", "career"]):
+            cur_sec = "experience"
+            continue
+        elif any(k in cl_head for k in ["education", "academic", "qualifications"]):
+            cur_sec = "education"
+            continue
+        elif any(k in cl_head for k in ["skill", "competenc", "technolog", "tech stack"]):
+            cur_sec = "skills"
+            continue
+        elif any(k in cl_head for k in ["project", "open source", "portfolio"]):
+            cur_sec = "projects"
+            continue
+        elif any(k in cl_head for k in ["certif", "license", "accreditation"]):
+            cur_sec = "certifications"
+            continue
+
+        if cur_sec == "summary":
+            summary_parts.append(clean)
+        elif cur_sec == "education":
+            res["education"].append(clean)
+        elif cur_sec == "experience":
+            res["experience"].append(clean)
+        elif cur_sec == "skills":
+            res["skills"].append(clean)
+        elif cur_sec == "projects":
+            res["projects"].append(clean)
+        elif cur_sec == "certifications":
+            res["certifications"].append(clean)
+
+    if summary_parts:
+        res["summary"] = " ".join(summary_parts)
 
     return res
 
@@ -985,16 +1030,11 @@ def generate_resume_question(file_text: str, answers: dict, questions_asked: lis
     has_skills = bool(analysis.get("skills"))
     has_summary = bool(analysis.get("summary"))
 
-    # Structured gates first (like IEEE does for title/authors)
-    if has_name and not answers.get("_name_ok"):
-        return {
-            "ready": False,
-            "question": f"I found the name \"{analysis['name']}\" in your document. Is that correct?",
-            "options": ["Yes, that's correct", "No, I'll type my name"],
-            "context": "Confirming your full name.",
-            "type": "name_confirm"
-        }
+    # If document has high confidence complete data (name, contact, background), it's ready immediately
+    if has_name and (has_email or has_phone) and (has_experience or has_education):
+        return {"ready": True}
 
+    # Structured gates first (only prompt if missing or unconfirmed)
     if not has_name and not answers.get("_name_ok"):
         return {
             "ready": False,
@@ -1004,16 +1044,16 @@ def generate_resume_question(file_text: str, answers: dict, questions_asked: lis
             "type": "name"
         }
 
-    if has_email and not answers.get("_email_ok"):
+    if has_name and not answers.get("_name_ok") and not (has_email or has_phone):
         return {
             "ready": False,
-            "question": f"I found the email \"{analysis['email']}\". Is that your contact email?",
-            "options": ["Yes, that's correct", "No, I'll type a different email"],
-            "context": "Contact email for the resume.",
-            "type": "email_confirm"
+            "question": f"I found the name \"{analysis['name']}\" in your document. Is that correct?",
+            "options": ["Yes, that's correct", "No, I'll type my name"],
+            "context": "Confirming your full name.",
+            "type": "name_confirm"
         }
 
-    if not has_email and not answers.get("_email_ok"):
+    if not has_email and not has_phone and not answers.get("_email_ok"):
         return {
             "ready": False,
             "question": "What is your email address for the resume?",
@@ -1022,7 +1062,16 @@ def generate_resume_question(file_text: str, answers: dict, questions_asked: lis
             "type": "email"
         }
 
-    if not has_phone and not answers.get("_phone_ok"):
+    if has_email and not answers.get("_email_ok") and not has_experience and not has_education:
+        return {
+            "ready": False,
+            "question": f"I found the email \"{analysis['email']}\". Is that your contact email?",
+            "options": ["Yes, that's correct", "No, I'll type a different email"],
+            "context": "Contact email for the resume.",
+            "type": "email_confirm"
+        }
+
+    if not has_phone and not answers.get("_phone_ok") and not has_email:
         return {
             "ready": False,
             "question": "What is your phone number?",

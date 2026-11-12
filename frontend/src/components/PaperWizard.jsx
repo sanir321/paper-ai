@@ -204,6 +204,7 @@ export default function PaperWizard({ onNewSession }) {
   const [resumeAiEditing, setResumeAiEditing] = useState(false);
   const [resumePreviewKey, setResumePreviewKey] = useState(0);
   const [resumeCustomAnswer, setResumeCustomAnswer] = useState('');
+  const [guidelineTab, setGuidelineTab] = useState('ieee'); // 'ieee' | 'resume'
 
   // ─── Academic Intelligence Tools State ─────────────────────────────────────
   const [auditData, setAuditData] = useState(null);
@@ -268,6 +269,54 @@ export default function PaperWizard({ onNewSession }) {
       goStep(1);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
+  };
+
+  const handleLoadSample = async (sampleType) => {
+    setLoading(true); setError('');
+    try {
+      const data = await apiService.loadSample(sampleType);
+      setSessionId(data.session_id);
+      setMode(data.mode);
+      const isPaper = data.mode === 'ieee';
+      setFile({
+        name: data.filename,
+        size: isPaper ? 11893 : 2043,
+        lastModified: Date.now(),
+      });
+      const docEntry = {
+        name: data.filename,
+        size: isPaper ? 11893 : 2043,
+        lastModified: Date.now(),
+        sessionId: data.session_id,
+        title: isPaper ? (data.analysis?.title || 'Distributed Anomaly Detection') : 'Samir Khadka Resume',
+        uploadedAt: Date.now(),
+        sections: isPaper ? 8 : 6,
+        qaCount: 0,
+      };
+      setUploadHistory(prev => {
+        const filtered = prev.filter(d => d.sessionId !== data.session_id);
+        return [docEntry, ...filtered].slice(0, 50);
+      });
+
+      if (isPaper) {
+        setAnalysis(data.analysis || {});
+        setReady(true);
+        setMessages([
+          { role: 'ai', text: `Loaded sample research paper notes on TinyML Edge AI: "${data.analysis?.title || 'Distributed Anomaly Detection'}". Standard 4-page target ready for generation!` }
+        ]);
+        goStep(1);
+      } else {
+        setResumeReady(true);
+        setResumeMessages([
+          { role: 'ai', text: `Loaded complete sample resume for Samir Khadka (AI Systems & Full-Stack Engineer). Ready to generate standard single-column ATS resume!` }
+        ]);
+        goStep(1);
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const answerQuestion = async (answer) => {
@@ -879,71 +928,222 @@ export default function PaperWizard({ onNewSession }) {
           )}
 
           {step === 0 && (
-            <div
-              className="rounded-2xl border-2 transition-all duration-300 cursor-pointer select-none flex flex-col items-center justify-center text-center"
-              style={{
-                borderStyle: file ? 'solid' : 'dashed',
-                borderColor: dragOver ? '#cc785c' : file ? '#cc785c' : '#e6dfd8',
-                backgroundColor: file ? '#faf9f5' : dragOver ? 'rgba(204,120,92,0.04)' : '#efe9de',
-                padding: file ? '32px 24px' : '64px 40px',
-                transform: dragOver ? 'scale(1.01)' : 'scale(1)',
-                boxShadow: dragOver ? '0 0 0 4px rgba(204,120,92,0.12), 0 4px 20px rgba(0,0,0,0.06)' : 'none',
-              }}
-              onClick={() => fileRef.current?.click()}
-              onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+            <div className="space-y-4">
+              <div
+                className="rounded-2xl border-2 transition-all duration-300 cursor-pointer select-none flex flex-col items-center justify-center text-center"
+                style={{
+                  borderStyle: file ? 'solid' : 'dashed',
+                  borderColor: dragOver ? '#cc785c' : file ? '#cc785c' : '#e6dfd8',
+                  backgroundColor: file ? '#faf9f5' : dragOver ? 'rgba(204,120,92,0.04)' : '#efe9de',
+                  padding: file ? '28px 24px' : '44px 32px',
+                  transform: dragOver ? 'scale(1.01)' : 'scale(1)',
+                  boxShadow: dragOver ? '0 0 0 4px rgba(204,120,92,0.12), 0 4px 20px rgba(0,0,0,0.06)' : 'none',
+                }}
+                onClick={() => fileRef.current?.click()}
+                onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
 
-              {!file && (
-                <>
-                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5"
-                    style={{ backgroundColor: '#e6dfd8', transform: dragOver ? 'scale(1.1)' : 'scale(1)', transition: 'transform 0.3s' }}>
-                    <LogoMark size={32} />
-                  </div>
-                  <p className="text-lg mb-1.5 font-medium" style={{ color: '#141413' }}>
-                    {dragOver ? 'Release to upload' : 'Upload your research documents'}
-                  </p>
-                  <p className="text-sm mb-6" style={{ color: '#6c6a64' }}>
-                    Drag & drop or{' '}
-                    <span style={{ color: '#cc785c', textDecoration: 'underline', textUnderlineOffset: '2px' }}>browse</span>
-                    {' '}— any file type supported
-                  </p>
-                  <input ref={fileRef} type="file" className="hidden" onChange={handleFileSelect} />
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 w-full max-w-lg mt-2">
-                    {FORMAT_INFO.map(fmt => (
-                      <div key={fmt.label} className="rounded-xl px-2 py-2 text-center" style={{ backgroundColor: '#e6dfd8' }}>
-                        <p className="text-xs font-semibold" style={{ color: '#141413' }}>{fmt.label}</p>
-                        <p className="text-[10px] mt-0.5 leading-tight" style={{ color: '#6c6a64' }}>{fmt.desc}</p>
+                {!file && (
+                  <>
+                    <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
+                      style={{ backgroundColor: '#e6dfd8', transform: dragOver ? 'scale(1.1)' : 'scale(1)', transition: 'transform 0.3s' }}>
+                      <LogoMark size={28} />
+                    </div>
+                    <p className="text-base md:text-lg mb-1 font-medium" style={{ color: '#141413' }}>
+                      {dragOver ? 'Release to upload' : 'Upload your research documents or resume'}
+                    </p>
+                    <p className="text-xs md:text-sm mb-5" style={{ color: '#6c6a64' }}>
+                      Drag & drop or{' '}
+                      <span style={{ color: '#cc785c', textDecoration: 'underline', textUnderlineOffset: '2px' }}>browse</span>
+                      {' '}— PDF, DOCX, TXT, MD supported
+                    </p>
+                    <input ref={fileRef} type="file" className="hidden" onChange={handleFileSelect} />
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 w-full max-w-lg mt-1">
+                      {FORMAT_INFO.map(fmt => (
+                        <div key={fmt.label} className="rounded-xl px-2 py-1.5 text-center" style={{ backgroundColor: '#e6dfd8' }}>
+                          <p className="text-[11px] font-semibold" style={{ color: '#141413' }}>{fmt.label}</p>
+                          <p className="text-[9px] mt-0.5 leading-tight" style={{ color: '#6c6a64' }}>{fmt.desc}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {file && (
+                  <>
+                    <div className="w-full max-w-md mb-4">
+                      <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-left"
+                        style={{ backgroundColor: 'rgba(204,120,92,0.06)', border: '1px solid rgba(204,120,92,0.15)' }}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cc785c" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                          <line x1="16" y1="13" x2="8" y2="13" />
+                          <line x1="16" y1="17" x2="8" y2="17" />
+                        </svg>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm truncate font-medium" style={{ color: '#141413' }}>{file.name}</p>
+                          <p className="text-xs" style={{ color: '#6c6a64' }}>{formatSize(file.size)}</p>
+                        </div>
+                        <button onClick={e => { e.stopPropagation(); setFile(null); }}
+                          className="text-xs hover:opacity-70 shrink-0" style={{ color: '#c64545' }}>✕</button>
                       </div>
-                    ))}
-                  </div>
-                </>
-              )}
+                    </div>
+                    <input ref={fileRef} type="file" className="hidden" onChange={handleFileSelect} />
+                    <button onClick={e => { e.stopPropagation(); handleUpload(); }} disabled={loading}
+                      className="rounded-full text-sm font-medium px-5 py-2.5 bg-primary text-white transition-all active:scale-[0.95] disabled:opacity-40 disabled:cursor-not-allowed">
+                      {loading ? <>Uploading<TypingDots /></> : 'Upload & Analyze'}
+                    </button>
+                  </>
+                )}
+              </div>
 
-              {file && (
-                <>
-                  <div className="w-full max-w-md mb-5">
-                    <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-left"
-                      style={{ backgroundColor: 'rgba(204,120,92,0.06)', border: '1px solid rgba(204,120,92,0.15)' }}>
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cc785c" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                        <polyline points="14 2 14 8 20 8" />
-                        <line x1="16" y1="13" x2="8" y2="13" />
-                        <line x1="16" y1="17" x2="8" y2="17" />
+              {/* Quick Sample Loaders & Format Guidelines */}
+              <div className="rounded-2xl border p-4 md:p-5 bg-surface-card border-hairline shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                  <div>
+                    <h3 className="text-sm md:text-base font-semibold text-ink flex items-center gap-2">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cc785c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="16" x2="12" y2="12" />
+                        <line x1="12" y1="8" x2="12.01" y2="8" />
                       </svg>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm truncate font-medium" style={{ color: '#141413' }}>{file.name}</p>
-                        <p className="text-xs" style={{ color: '#6c6a64' }}>{formatSize(file.size)}</p>
-                      </div>
-                      <button onClick={e => { e.stopPropagation(); setFile(null); }}
-                        className="text-xs hover:opacity-70 shrink-0" style={{ color: '#c64545' }}>✕</button>
+                      Required Document Format & 1-Click Samples
+                    </h3>
+                    <p className="text-xs text-muted mt-0.5">
+                      Generate instantly using pre-configured benchmark samples, or review required inputs below.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => handleLoadSample('paper')}
+                      disabled={loading}
+                      className="text-xs font-medium px-3 py-1.5 rounded-full border border-primary/30 text-primary hover:bg-primary/10 transition-all flex items-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50"
+                    >
+                      <span>📄</span> Load Sample IEEE Paper (4-Page)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleLoadSample('resume')}
+                      disabled={loading}
+                      className="text-xs font-medium px-3 py-1.5 rounded-full bg-primary text-white hover:opacity-90 transition-all flex items-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50"
+                    >
+                      <span>👤</span> Load Sample Resume (1-Page)
+                    </button>
+                  </div>
+                </div>
+
+                {/* Mode Guidelines Tabs */}
+                <div className="flex gap-4 border-b border-hairline mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setGuidelineTab('ieee')}
+                    className={`text-xs font-mono pb-2 px-1 transition-all ${
+                      guidelineTab === 'ieee'
+                        ? 'border-b-2 border-primary text-primary font-semibold'
+                        : 'text-muted hover:text-ink'
+                    }`}
+                  >
+                    IEEE Research Paper (4+ Pages Standard)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGuidelineTab('resume')}
+                    className={`text-xs font-mono pb-2 px-1 transition-all ${
+                      guidelineTab === 'resume'
+                        ? 'border-b-2 border-primary text-primary font-semibold'
+                        : 'text-muted hover:text-ink'
+                    }`}
+                  >
+                    Professional Resume (1-Page ATS Standard)
+                  </button>
+                </div>
+
+                {guidelineTab === 'ieee' ? (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                    <div className="p-3 rounded-xl bg-canvas border border-hairline">
+                      <p className="font-semibold text-ink mb-1.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-primary inline-block"></span>
+                        Required Fields
+                      </p>
+                      <ul className="space-y-1 text-muted leading-relaxed">
+                        <li>• <strong>Paper Title</strong> & Technical Domain</li>
+                        <li>• <strong>Authors & Affiliation</strong> with email</li>
+                        <li>• <strong>Abstract</strong> (150–250 words summary)</li>
+                        <li>• <strong>Methodology</strong> or Architecture spec</li>
+                        <li>• <strong>Citations</strong> (3–8 prior art references)</li>
+                      </ul>
+                    </div>
+                    <div className="p-3 rounded-xl bg-canvas border border-hairline">
+                      <p className="font-semibold text-ink mb-1.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-600 inline-block"></span>
+                        Recommended for 4+ Pages
+                      </p>
+                      <ul className="space-y-1 text-muted leading-relaxed">
+                        <li>• Mathematical equations & model formulas</li>
+                        <li>• Benchmark comparative data & tables</li>
+                        <li>• Figures/diagrams or architectural charts</li>
+                        <li>• Hardware constraints (RAM, CPU, latency)</li>
+                        <li>• Comprehensive notes (&gt;1,200 words)</li>
+                      </ul>
+                    </div>
+                    <div className="p-3 rounded-xl bg-canvas border border-hairline">
+                      <p className="font-semibold text-ink mb-1.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-blue-600 inline-block"></span>
+                        AI Edit & Academic Tools
+                      </p>
+                      <ul className="space-y-1 text-muted leading-relaxed">
+                        <li>• <strong>Tone Polishing</strong> (formal IEEE academic style)</li>
+                        <li>• <strong>Literature Search</strong> (live arXiv / CrossRef)</li>
+                        <li>• <strong>Auto-Literature</strong> (1-click reference injection)</li>
+                        <li>• <strong>Audit Compliance</strong> (page count & citations)</li>
+                        <li>• Direct section markdown & DOCX/PDF export</li>
+                      </ul>
                     </div>
                   </div>
-                  <input ref={fileRef} type="file" className="hidden" onChange={handleFileSelect} />
-                  <button onClick={e => { e.stopPropagation(); handleUpload(); }} disabled={loading}
-                    className="rounded-full text-sm font-medium px-5 py-2.5 bg-primary text-white transition-all active:scale-[0.95] disabled:opacity-40 disabled:cursor-not-allowed">
-                    {loading ? <>Uploading<TypingDots /></> : 'Upload'}
-                  </button>
-                </>
-              )}
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                    <div className="p-3 rounded-xl bg-canvas border border-hairline">
+                      <p className="font-semibold text-ink mb-1.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-primary inline-block"></span>
+                        Required Fields
+                      </p>
+                      <ul className="space-y-1 text-muted leading-relaxed">
+                        <li>• <strong>Candidate Name</strong> (Header title)</li>
+                        <li>• <strong>Contact Info</strong> (Email, Phone, Location)</li>
+                        <li>• <strong>Professional Summary</strong> (2-4 sentences)</li>
+                        <li>• <strong>Work Experience</strong> (Role, Company, Dates)</li>
+                        <li>• <strong>Education</strong> (Degree, University, Year)</li>
+                      </ul>
+                    </div>
+                    <div className="p-3 rounded-xl bg-canvas border border-hairline">
+                      <p className="font-semibold text-ink mb-1.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-600 inline-block"></span>
+                        High-Impact Additions
+                      </p>
+                      <ul className="space-y-1 text-muted leading-relaxed">
+                        <li>• Quantified bullet points (e.g. "improved 40%")</li>
+                        <li>• <strong>Categorized Skills</strong> (Languages, Cloud, Tools)</li>
+                        <li>• <strong>Key Projects</strong> with tech stack & links</li>
+                        <li>• Certifications, awards & licenses</li>
+                        <li>• GitHub and LinkedIn profile handles</li>
+                      </ul>
+                    </div>
+                    <div className="p-3 rounded-xl bg-canvas border border-hairline">
+                      <p className="font-semibold text-ink mb-1.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-blue-600 inline-block"></span>
+                        AI Edit & ATS Features
+                      </p>
+                      <ul className="space-y-1 text-muted leading-relaxed">
+                        <li>• <strong>ATS-Optimized Formatting</strong> (clean single column)</li>
+                        <li>• <strong>Prompt-Based AI Edits</strong> (e.g. "make more senior")</li>
+                        <li>• <strong>Zero Text Overlap</strong> in generated PDF</li>
+                        <li>• Live Markdown & HTML split preview</li>
+                        <li>• Instant high-res PDF & HTML export</li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

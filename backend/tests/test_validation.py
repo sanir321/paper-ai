@@ -10,6 +10,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from fastapi.testclient import TestClient
 import main
 
 
@@ -195,3 +196,61 @@ def test_snapshot_path_rejects_traversal():
     assert main._session_snapshot_path("a/b") is None
     assert main._session_snapshot_path("") is None
     assert main._session_snapshot_path("ok-123") is not None
+
+
+def test_parse_resume_numbered_headings():
+    raw_md = """# Samir Khadka
+samir.khadka@example.com | +977 9812345678 | Kathmandu, Nepal
+
+## 1. Professional Summary
+Passionate AI Systems and Full-Stack Software Engineer with 4+ years of hands-on experience.
+
+## 2. Work Experience & Leadership
+### Lead Software Engineer | Apex Tech Labs | 2022 - Present
+- Architected and deployed microservices backend processing 1.2M daily requests.
+
+## 3. Education & Background
+- Bachelor of Science in Computer Science — Tribhuvan University, 2020 | GPA: 3.85
+
+## 4. Technical Skills & Core Competencies
+- Languages: Python, TypeScript, Rust
+
+## 5. Projects & Systems
+- MicroSeisNet Edge AI | Tech: Python, C++
+
+## 6. Certifications & Badges
+- AWS Certified Solutions Architect
+"""
+    data = main.parse_resume_text(raw_md)
+    assert data["name"] == "Samir Khadka"
+    assert data["email"] == "samir.khadka@example.com"
+    assert "Passionate AI Systems" in data["summary"]
+    assert len(data["experience"]) >= 1
+    assert data["experience"][0]["role"] == "Lead Software Engineer"
+    assert len(data["education"]) >= 1
+    assert "Tribhuvan University" in (data["education"][0].get("school") or data["education"][0].get("degree"))
+    assert len(data["skills"]) >= 1
+    assert len(data["projects"]) >= 1
+    assert len(data["certifications"]) >= 1
+
+
+def test_sample_endpoints():
+    c = TestClient(main.app)
+    r_paper = c.get("/api/sample/paper")
+    assert r_paper.status_code == 200
+    p_data = r_paper.json()
+    assert p_data["type"] == "paper"
+    assert len(p_data["content"]) > 1000
+
+    r_resume = c.get("/api/sample/resume")
+    assert r_resume.status_code == 200
+    res_data = r_resume.json()
+    assert res_data["type"] == "resume"
+    assert "Samir Khadka" in res_data["content"]
+
+    r_load_resume = c.post("/api/load-sample/resume")
+    assert r_load_resume.status_code == 200
+    load_res = r_load_resume.json()
+    assert load_res["ready"] is True
+    assert load_res["mode"] == "resume"
+    assert load_res["session_id"] in main.sessions

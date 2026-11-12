@@ -18,6 +18,8 @@ dist/
 build/
 test_*
 sample_*
+!backend/samples/
+!backend/samples/*
 !backend/tests/
 !backend/tests/test_*.py
 *.pdf

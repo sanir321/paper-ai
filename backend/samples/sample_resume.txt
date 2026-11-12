@@ -1,0 +1,34 @@
+# Samir Khadka
+Kathmandu, Nepal | samir.khadka@example.com | +977 9812345678 | linkedin.com/in/samirkhadka | github.com/samirkhadka
+
+## Professional Summary
+Passionate AI Systems and Full-Stack Software Engineer with 4+ years of hands-on experience designing distributed architectures, TinyML edge deployments, and high-performance Web APIs. Proven track record of optimizing deep learning pipelines for resource-constrained hardware.
+
+## Work Experience
+### Lead Software Engineer | Apex Tech Labs | Kathmandu, Nepal | 2022 - Present
+- Architected and deployed microservices backend processing 1.2M daily requests using FastAPI, Redis, and PostgreSQL.
+- Implemented edge-native TinyML inference on ESP32-S3 microcontrollers achieving 14.2ms latency and 97.8% classification accuracy.
+- Mentored a cross-functional engineering team of 6 developers, conducting code reviews and CI/CD automation.
+
+### AI Systems Engineer | NeuroSync Solutions | Remote | 2020 - 2022
+- Developed automated computer vision pipelines using PyTorch, OpenCV, and ONNX Runtime.
+- Reduced model quantization loss to under 0.5% while compressing model footprint by 64% using int8 post-training quantization.
+- Authored automated test suites increasing test coverage from 62% to 94%.
+
+## Education
+- **Bachelor of Science in Computer Science and Engineering** — Tribhuvan University, 2020 | GPA: 3.85 / 4.0
+
+## Technical Skills
+- Languages: Python, TypeScript, JavaScript, C++, Rust, SQL
+- Frameworks: FastAPI, React, PyTorch, TensorFlow Lite, Node.js, Tailwind CSS
+- Cloud & Tools: Docker, PostgreSQL, Redis, AWS, Cloudflare, Git, Linux
+
+## Key Projects
+- **MicroSeisNet Edge AI** | Tech: Python, C++, TensorFlow Lite
+- Real-time distributed seismic anomaly detector on ESP32 nodes with ad-hoc mesh consensus.
+- **PaperAI Generator** | Tech: FastAPI, React, FPDF2, Vite
+- Full-stack automated IEEE publication and academic document intelligence engine.
+
+## Certifications
+- AWS Certified Solutions Architect - Associate
+- DeepLearning.AI Deep Learning Specialization

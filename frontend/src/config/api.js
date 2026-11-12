@@ -141,4 +141,12 @@ export const apiService = {
     });
   },
 
+  getSample(sampleType) {
+    return req(`${BASE}/api/sample/${sampleType}`);
+  },
+
+  loadSample(sampleType) {
+    return req(`${BASE}/api/load-sample/${sampleType}`, { method: 'POST' });
+  },
+
 };

@@ -20,7 +20,7 @@ import fitz
 from services.llm_service import (
     analyze_document, generate_question, generate_paper_stream, edit_paper,
     analyze_document_for_resume, generate_resume_question, generate_resume_stream, edit_resume,
-    find_paper_start
+    _extract_resume_metadata_heuristic, find_paper_start
 )
 from services.academic_tools import (
     search_arxiv, search_crossref, auto_populate_literature,
@@ -599,6 +599,133 @@ async def upload_file(file: UploadFile = File(...)):
     _touch_session(session_id)
 
     return {"session_id": session_id, "images_count": len(images)}
+
+
+@app.get("/api/sample/{sample_type}")
+async def get_sample_data(sample_type: str):
+    """Retrieve sample raw text and metadata for IEEE paper or Resume."""
+    base_dir = os.path.dirname(__file__)
+    if sample_type in ("paper", "ieee"):
+        path = os.path.join(base_dir, "samples", "sample_ieee_paper.txt")
+        if not os.path.exists(path):
+            path = os.path.join(base_dir, "..", "sample_ieee_paper.txt")
+        if not os.path.exists(path):
+            path = "sample_ieee_paper.txt"
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {
+            "type": "paper",
+            "filename": "sample_ieee_paper.txt",
+            "title": "Distributed Anomaly Detection and Edge Inference for Real-Time Seismic Sensing Networks",
+            "domain": "Edge Computing & TinyML",
+            "content": content,
+            "word_count": len(content.split()),
+            "char_count": len(content),
+            "target_pages": "4 Pages (Standard IEEE Double-Column)",
+        }
+    elif sample_type == "resume":
+        path = os.path.join(base_dir, "samples", "sample_resume.txt")
+        if not os.path.exists(path):
+            path = os.path.join(base_dir, "..", "sample_resume.txt")
+        if not os.path.exists(path):
+            path = "sample_resume.txt"
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {
+            "type": "resume",
+            "filename": "sample_resume.txt",
+            "name": "Samir Khadka",
+            "role": "AI Systems & Full-Stack Software Engineer",
+            "content": content,
+            "word_count": len(content.split()),
+            "char_count": len(content),
+            "target_pages": "1 Page (Standard Single-Column ATS Format)",
+        }
+    else:
+        raise HTTPException(400, "Invalid sample type. Use 'paper' or 'resume'.")
+
+
+@app.post("/api/load-sample/{sample_type}")
+async def load_sample_endpoint(sample_type: str):
+    """Create and return a new active session pre-populated with sample data."""
+    base_dir = os.path.dirname(__file__)
+    if sample_type in ("paper", "ieee"):
+        path = os.path.join(base_dir, "samples", "sample_ieee_paper.txt")
+        if not os.path.exists(path):
+            path = os.path.join(base_dir, "..", "sample_ieee_paper.txt")
+        if not os.path.exists(path):
+            path = "sample_ieee_paper.txt"
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        filename = "sample_ieee_paper.txt"
+        mode = "ieee"
+    elif sample_type == "resume":
+        path = os.path.join(base_dir, "samples", "sample_resume.txt")
+        if not os.path.exists(path):
+            path = os.path.join(base_dir, "..", "sample_resume.txt")
+        if not os.path.exists(path):
+            path = "sample_resume.txt"
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        filename = "sample_resume.txt"
+        mode = "resume"
+    else:
+        raise HTTPException(400, "Invalid sample type. Use 'paper' or 'resume'.")
+
+    tmp = tempfile.mkdtemp()
+    session_id = str(uuid.uuid4())[:8]
+    session_data = {
+        "session_dir": tmp,
+        "session_id": session_id,
+        "filename": filename,
+        "file_text": content,
+        "raw_text": content,
+        "mode": mode,
+        "images": [],
+        "created_at": time.time(),
+        "updated_at": time.time(),
+    }
+
+    if mode == "ieee":
+        try:
+            analysis = analyze_document(content)
+        except Exception:
+            analysis = {}
+        if not analysis:
+            analysis = {
+                "title": "Distributed Anomaly Detection and Edge Inference for Real-Time Seismic Sensing Networks",
+                "domain": "Edge Computing & TinyML",
+                "ready": True,
+                "keywords": ["TinyML", "Edge AI", "Seismic Sensing", "Distributed Systems", "ESP32-S3"],
+                "completeness_score": 92,
+            }
+        session_data["analysis"] = analysis
+        session_data["answers"] = {
+            "Who are the authors, their affiliations, and contact emails?": "Samir Khadka, Apex Distributed Systems Lab, samir.khadka@example.com"
+        }
+        session_data["questions_asked"] = []
+        session_data["ready"] = True
+    else:
+        try:
+            resume_analysis = analyze_document_for_resume(content)
+        except Exception:
+            resume_analysis = _extract_resume_metadata_heuristic(content)
+        session_data["resume_analysis"] = resume_analysis
+        session_data["resume_answers"] = {"_name_ok": True, "_email_ok": True, "_phone_ok": True}
+        session_data["resume_questions_asked"] = []
+        session_data["resume_ready"] = True
+
+    sessions[session_id] = session_data
+    _persist_session(session_id)
+
+    return {
+        "session_id": session_id,
+        "filename": filename,
+        "mode": mode,
+        "ready": True,
+        "analysis": session_data.get("analysis", {}),
+        "resume_analysis": session_data.get("resume_analysis", {}),
+    }
 
 
 @app.get("/api/session/{session_id}")
@@ -1947,46 +2074,55 @@ def parse_resume_text(resume_text: str) -> dict:
                 result["github"] = p
             elif re.search(r'[\+]?[\d\-\(\)\s]{7,}', p) and sum(c.isdigit() for c in p) >= 7 and not result["phone"]:
                 result["phone"] = p
-            elif not result["location"] and len(p.split()) <= 4 and not any(k in p.lower() for k in ["http", "www", ".com", "@"]):
+            elif not result["location"] and len(p.split()) <= 4 and not any(k in p.lower() for k in ["http", "www", ".com", "@"]) and not _match_resume_section(p) and not re.match(r'^\d+[\.\)]', p):
                 result["location"] = p
 
-    section_map = {
-        "summary": "summary",
-        "professional summary": "summary",
-        "profile": "summary",
-        "about": "summary",
-        "education": "education",
-        "academic background": "education",
-        "experience": "experience",
-        "work experience": "experience",
-        "professional experience": "experience",
-        "employment": "experience",
-        "skills": "skills",
-        "technical skills": "skills",
-        "core competencies": "skills",
-        "technologies": "skills",
-        "projects": "projects",
-        "key projects": "projects",
-        "personal projects": "projects",
-        "certifications": "certifications",
-        "certificates": "certifications",
-        "licenses & certifications": "certifications",
-    }
+    def _match_resume_section(header_text: str):
+        clean = re.sub(r'^(?:section\s+)?\d+[\.\)]?\s*', '', header_text.strip().lower()).strip(': -*#_`')
+        clean = clean.replace('&', 'and')
+        if any(k in clean for k in ["summary", "profile", "about", "objective", "biography"]):
+            return "summary"
+        if any(k in clean for k in ["experience", "employment", "work history", "career", "job history"]):
+            return "experience"
+        if any(k in clean for k in ["education", "academic", "qualifications", "degree"]):
+            return "education"
+        if any(k in clean for k in ["skill", "competenc", "technolog", "tech stack", "tools"]):
+            return "skills"
+        if any(k in clean for k in ["project", "open source", "portfolio"]):
+            return "projects"
+        if any(k in clean for k in ["certif", "license", "accreditation", "awards"]):
+            return "certifications"
+        return None
 
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("```"):
             continue
 
+        # Detect headers (# heading, **HEADING**, or UPPERCASE header)
+        is_heading_line = False
+        potential_heading = ""
         if stripped.startswith("#"):
-            h_text = stripped.lstrip("#").strip().lower()
-            if h_text in section_map:
-                current_section = section_map[h_text]
+            is_heading_line = True
+            potential_heading = stripped.lstrip("#").strip()
+        elif stripped.startswith("**") and stripped.endswith("**") and len(stripped) < 70 and not any(sep in stripped for sep in ["|", "—", "–"]):
+            potential_heading = stripped.strip("*").strip()
+            if _match_resume_section(potential_heading):
+                is_heading_line = True
+        elif stripped.isupper() and len(stripped) < 50 and not any(c in stripped for c in ["@", "http", ".com"]):
+            if _match_resume_section(stripped):
+                is_heading_line = True
+                potential_heading = stripped
+
+        if is_heading_line:
+            matched = _match_resume_section(potential_heading)
+            if matched:
+                current_section = matched
                 current_exp = None
                 current_proj = None
                 continue
             if current_section is None and not result["name"]:
-                result["name"] = clean_md(stripped.lstrip("#").strip())
+                result["name"] = clean_md(potential_heading)
                 continue
 
         if current_section is None:
@@ -2246,7 +2382,13 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                 pdf.set_text_color(0, 0, 0)
                 pdf.set_x(ml)
                 date_w = 40 if year else 0
-                pdf.cell(content_w - date_w, 4.8, degree, new_x="RIGHT", new_y="TOP")
+                max_deg_w = content_w - date_w - 3
+                deg_display = degree
+                if date_w > 0 and pdf.get_string_width(deg_display) > max_deg_w:
+                    while deg_display and pdf.get_string_width(deg_display + "...") > max_deg_w:
+                        deg_display = deg_display[:-1].rstrip()
+                    deg_display += "..."
+                pdf.cell(content_w - date_w, 4.8, deg_display, new_x="RIGHT", new_y="TOP")
                 if year:
                     pdf.set_font("Helvetica", "I", 8.5)
                     pdf.set_text_color(70, 70, 70)
@@ -2287,7 +2429,13 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                 pdf.set_text_color(0, 0, 0)
                 pdf.set_x(ml)
                 date_w = 45 if dates else 0
-                pdf.cell(content_w - date_w, 4.8, role or company, new_x="RIGHT", new_y="TOP")
+                max_rc_w = content_w - date_w - 3
+                rc_display = role or company
+                if date_w > 0 and pdf.get_string_width(rc_display) > max_rc_w:
+                    while rc_display and pdf.get_string_width(rc_display + "...") > max_rc_w:
+                        rc_display = rc_display[:-1].rstrip()
+                    rc_display += "..."
+                pdf.cell(content_w - date_w, 4.8, rc_display, new_x="RIGHT", new_y="TOP")
                 if dates:
                     pdf.set_font("Helvetica", "I", 8.5)
                     pdf.set_text_color(70, 70, 70)
@@ -2358,12 +2506,23 @@ def generate_resume_pdf(resume_data: dict) -> bytes:
                 pdf.set_font("Helvetica", "B", 9.5)
                 pdf.set_text_color(0, 0, 0)
                 pdf.set_x(ml)
-                tech_w = pdf.get_string_width(tech) + 2 if tech else 0
-                pdf.cell(content_w - tech_w, 4.8, p_name, new_x="RIGHT", new_y="TOP")
+                tech_w = min(pdf.get_string_width(tech) + 3, content_w * 0.45) if tech else 0
+                max_pname_w = content_w - tech_w - 3
+                p_display = p_name
+                if tech_w > 0 and pdf.get_string_width(p_display) > max_pname_w:
+                    while p_display and pdf.get_string_width(p_display + "...") > max_pname_w:
+                        p_display = p_display[:-1].rstrip()
+                    p_display += "..."
+                pdf.cell(content_w - tech_w, 4.8, p_display, new_x="RIGHT", new_y="TOP")
                 if tech:
                     pdf.set_font("Helvetica", "I", 8.5)
                     pdf.set_text_color(70, 70, 70)
-                    pdf.cell(tech_w, 4.8, tech, align="R", new_x="LMARGIN", new_y="NEXT")
+                    tech_display = tech
+                    if pdf.get_string_width(tech_display) > tech_w:
+                        while tech_display and pdf.get_string_width(tech_display + "...") > tech_w:
+                            tech_display = tech_display[:-1].rstrip()
+                        tech_display += "..."
+                    pdf.cell(tech_w, 4.8, tech_display, align="R", new_x="LMARGIN", new_y="NEXT")
                 else:
                     pdf.ln(4.8)
 
@@ -2697,6 +2856,7 @@ async def save_resume(session_id: str, data: dict):
     html = generate_resume_html(resume_data)
     s["resume_html"] = html
     s["resume_data"] = resume_data
+    _persist_session(session_id)
 
     return {
         "resume_text": resume_text,
@@ -2735,6 +2895,7 @@ async def edit_resume_endpoint(session_id: str, data: dict):
     html = generate_resume_html(resume_data)
     s["resume_html"] = html
     s["resume_data"] = resume_data
+    _persist_session(session_id)
 
     return {
         "resume_text": edited,
