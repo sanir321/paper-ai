@@ -975,7 +975,7 @@ Then, on the following line, the paper itself. Nothing else before that marker l
             streamed_any = True
             yield token
         if not streamed_any:
-            text = call_llm(messages, temperature=0.5, max_tokens=6144)
+            text = call_llm(messages, temperature=0.5, max_tokens=6144, retries=1)
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
             for chunk in [text[i:i+80] for i in range(0, len(text), 80)]:
@@ -1077,10 +1077,8 @@ def _generate_fallback_paper(file_text: str, answers: dict, analysis: dict):
                 break
     if not abstract:
         abstract = (
-            f"This paper presents {title}, addressing critical latency, memory footprint, and bandwidth bottlenecks "
-            f"in edge-native computing. By deploying resource-constrained inference topologies, the proposed architecture "
-            f"achieves high classification accuracy with low compute overhead. Empirical evaluations corroborate "
-            f"significant improvements over conventional centralized benchmarks across real-time telemetry datasets."
+            f"This paper presents {title}, addressing {kw_str}. "
+            "The document's core contribution, methodology and findings are summarized in the following sections."
         )
 
     paper_lines.extend(["## Abstract", abstract, ""])
@@ -1131,7 +1129,9 @@ def _generate_fallback_paper(file_text: str, answers: dict, analysis: dict):
 
             paper_lines.append("")
     else:
-        # Document without pre-formatted section headers: extract content lines and analysis claims
+        # Document without pre-formatted section headers: build the full
+        # standard IEEE skeleton and distribute the document's own content
+        # across it, so the fallback still meets the 2-4 page standard.
         doc_lines = [l.strip() for l in (file_text or "").split("\n") if l.strip() and not l.startswith("#")]
         content_lines = [
             l for l in doc_lines
@@ -1152,31 +1152,54 @@ def _generate_fallback_paper(file_text: str, answers: dict, analysis: dict):
         if not intro_bullets and points:
             intro_bullets = [f"- {p}" for p in points[:6]]
 
+        # Split the document's own statements across the standard sections.
+        third = max(1, len(points) // 3)
+        concept_points = points[:third]
+        result_points = points[third:2 * third] or points[third:]
+        discussion_points = points[2 * third:]
+
         paper_lines.extend([
-            "## Introduction",
+            "## I. Introduction",
             f"This paper presents the content of the uploaded document in a structured form. "
             f"The document focuses on {kw_str}.\n\n" + "\n".join(intro_bullets),
-            ""
+            "",
+            "## II. Key Concepts and Background",
+            ("\n".join(f"- {p}" for p in concept_points) if concept_points
+             else f"The document provides foundational material on {kw_str}; the primary statements are carried into the Methodology and Results sections below."),
+            "",
         ])
 
-        if points:
-            paper_lines.extend(["## Key Points from the Document", "\n".join(f"- {p}" for p in points), ""])
+        if methodology or concept_points[third:]:
+            paper_lines.extend([
+                "## III. Methodology",
+                (methodology if methodology
+                 else "The methodology described in the source document is summarized below."),
+                ("\n\n" + "\n".join(f"- {p}" for p in concept_points[third:]) if concept_points[third:] else ""),
+                "",
+            ])
 
-        if findings:
+        if findings or result_points:
             f_lines = []
             for f_ in findings[:6]:
                 if isinstance(f_, dict) and f_.get("finding"):
                     f_lines.append(f"- {f_['finding']}")
                 elif isinstance(f_, str):
                     f_lines.append(f"- {f_}")
+            if result_points:
+                f_lines.extend(f"- {p}" for p in result_points)
             if f_lines:
-                paper_lines.extend(["## Key Findings", "\n".join(f_lines), ""])
+                paper_lines.extend(["## IV. Results and Findings", "\n".join(f_lines), ""])
 
-        if methodology:
-            paper_lines.extend(["## Methodology", methodology, ""])
+        if discussion_points:
+            paper_lines.extend([
+                "## V. Discussion",
+                "The remaining statements from the source document are recorded here for completeness:\n\n"
+                + "\n".join(f"- {p}" for p in discussion_points),
+                "",
+            ])
 
         paper_lines.extend([
-            "## Conclusion",
+            "## VI. Conclusion",
             f"This paper synthesized the material contained in the uploaded document on {kw_str}. "
             "The key concepts and findings presented provide a foundation for further work and discussion.",
             ""

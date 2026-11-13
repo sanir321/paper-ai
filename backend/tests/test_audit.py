@@ -164,7 +164,7 @@ def test_fallback_paper_uses_document_and_omits_fake_results():
     # No invented sections
     assert "## Results and Discussion" not in paper
     assert "## Literature Review" not in paper
-    assert "## Methodology" in paper  # comes from the actual analysis value
+    assert "## III. Methodology" in paper  # comes from the actual analysis value
 
 
 def test_fallback_paper_omits_references_and_authors_when_absent():
