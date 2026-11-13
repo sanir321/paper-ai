@@ -271,7 +271,7 @@ export default function PaperWizard({ onNewSession }) {
     finally { setLoading(false); }
   };
 
-  const handleLoadSample = async (sampleType) => {
+  const handleLoadSample = async (sampleType, autoGenerate = false) => {
     setLoading(true); setError('');
     try {
       const data = await apiService.loadSample(sampleType);
@@ -304,12 +304,24 @@ export default function PaperWizard({ onNewSession }) {
         setMessages([
           { role: 'ai', text: `Loaded sample research paper notes on TinyML Edge AI: "${data.analysis?.title || 'Distributed Anomaly Detection'}". Standard 4-page target ready for generation!` }
         ]);
+        if (autoGenerate) {
+          goStep(3);
+          setGenerating(true);
+          handleGenerate(data.session_id);
+          return;
+        }
         goStep(1);
       } else {
         setResumeReady(true);
         setResumeMessages([
           { role: 'ai', text: `Loaded complete sample resume for Samir Khadka (AI Systems & Full-Stack Engineer). Ready to generate standard single-column ATS resume!` }
         ]);
+        if (autoGenerate) {
+          goStep(3);
+          setResumeGenerating(true);
+          handleResumeGenerate(data.session_id);
+          return;
+        }
         goStep(1);
       }
     } catch (e) {
@@ -405,12 +417,12 @@ export default function PaperWizard({ onNewSession }) {
     finally { setLoading(false); }
   };
 
-  const handleGenerate = () => {
+  const handleGenerate = (id = sessionId) => {
     setGenerating(true); setError('');
     setLivePaper('');
     streamDone.current = false;
     evtSourceRef.current?.close();
-    const es = new EventSource(`${BASE}/api/generate-paper-stream/${sessionId}`);
+    const es = new EventSource(`${BASE}/api/generate-paper-stream/${id}`);
     evtSourceRef.current = es;
     es.onmessage = (evt) => {
       try {
@@ -691,12 +703,12 @@ export default function PaperWizard({ onNewSession }) {
   };
 
   // ─── Resume generation ───────────────────────────────────────────────────
-  const handleResumeGenerate = () => {
+  const handleResumeGenerate = (id = sessionId) => {
     setResumeGenerating(true); setError('');
     setLiveResume('');
     streamDone.current = false;
     evtSourceResumeRef.current?.close();
-    const es = new EventSource(`${BASE}/api/generate-resume-stream/${sessionId}`);
+    const es = new EventSource(`${BASE}/api/generate-resume-stream/${id}`);
     evtSourceResumeRef.current = es;
     es.onmessage = (evt) => {
       try {
@@ -1013,6 +1025,14 @@ export default function PaperWizard({ onNewSession }) {
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => handleLoadSample('paper', true)}
+                      disabled={loading || generating}
+                      className="text-xs font-semibold px-4 py-2 rounded-full bg-gradient-to-r from-primary to-accent-teal text-white shadow-md transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                    >
+                      <span>⚡</span> One-Click Demo: Instant 4-Page IEEE Paper
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleLoadSample('paper')}
@@ -1465,7 +1485,7 @@ export default function PaperWizard({ onNewSession }) {
                     IEMT
                   </button>
                 </div>
-                <button onClick={handleGenerate}
+                <button onClick={() => handleGenerate()}
                   className="rounded-full text-sm font-medium px-5 py-2.5 bg-primary text-white transition-all active:scale-[0.95]">
                   Generate Paper
                 </button>
@@ -1579,7 +1599,7 @@ export default function PaperWizard({ onNewSession }) {
             <div className="rounded-2xl border transition-all duration-200 bg-surface-card border-hairline">
               <div className="p-5 md:p-8 text-center">
                 <p className="text-base md:text-lg mb-4 font-display text-ink" style={{ letterSpacing: '-0.3px' }}>Ready to generate your resume</p>
-                <button onClick={handleResumeGenerate}
+                <button onClick={() => handleResumeGenerate()}
                   className="rounded-full text-sm font-medium px-5 py-2.5 bg-primary text-white transition-all active:scale-[0.95]">
                   Generate Resume
                 </button>
